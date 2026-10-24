@@ -68,8 +68,8 @@ jobs:
           printf "\ne9acab5b5fbb560a72cfa4f27c30f4d10488f3d0\n" > /usr/local/lib/android/sdk/licenses/android-googletv-license
           printf "\n601085b94cd77f0b54ff86406957099fed7926d4\n" > /usr/local/lib/android/sdk/licenses/android-googlexr-license
 
-          # Install Android 35 platform and build-tools
-          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          # Install Android 35 and 34 platforms and build-tools
+          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "platforms;android-34" "build-tools;35.0.0" "build-tools;34.0.0" > /dev/null 2>&1 || true
           set -e
           echo "Android SDK and licenses successfully configured!"
 
@@ -100,6 +100,15 @@ jobs:
           else
             echo "Syncing Capacitor Android project..."
             npx cap sync android
+          fi
+
+      - name: ⚙️ Set stable compileSdkVersion and targetSdkVersion (Android 35)
+        run: |
+          if [ -f "android/variables.gradle" ]; then
+            echo "Enforcing Android SDK 35 in android/variables.gradle..."
+            sed -i 's/compileSdkVersion = .*/compileSdkVersion = 35/g' android/variables.gradle
+            sed -i 's/targetSdkVersion = .*/targetSdkVersion = 35/g' android/variables.gradle
+            head -n 6 android/variables.gradle
           fi
 
       - name: 🛡️ Ensure Android Permissions in Manifest
