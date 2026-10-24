@@ -1,0 +1,180 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version Tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      build_type:
+        description: 'Build Type (debug or release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+      create_release:
+        description: 'Publish as GitHub Release'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-android-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 📱 Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📦 Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 🛠️ Install npm dependencies
+        run: |
+          npm install --legacy-peer-deps
+
+      - name: 🌐 Build Vite Web Application
+        run: |
+          npm run build
+        env:
+          NODE_ENV: production
+
+      - name: ⚡ Install Capacitor CLI and Android Platform
+        run: |
+          npm install --no-save @capacitor/core @capacitor/cli @capacitor/android
+
+      - name: 🔄 Sync / Add Android Platform
+        run: |
+          if [ ! -d "android" ]; then
+            echo "Initializing Capacitor Android project..."
+            npx cap add android
+          else
+            echo "Syncing Capacitor Android project..."
+            npx cap sync android
+          fi
+
+      - name: 🛡️ Ensure Android Permissions in Manifest
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            echo "Adding required network and hardware permissions to AndroidManifest.xml..."
+            # Check and add INTERNET permission if not present
+            grep -q "android.permission.INTERNET" "$MANIFEST" || sed -i '/<manifest/a \    <uses-permission android:name="android.permission.INTERNET" />' "$MANIFEST"
+            grep -q "android.permission.ACCESS_NETWORK_STATE" "$MANIFEST" || sed -i '/<manifest/a \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' "$MANIFEST"
+            grep -q "android.permission.RECORD_AUDIO" "$MANIFEST" || sed -i '/<manifest/a \    <uses-permission android:name="android.permission.RECORD_AUDIO" />' "$MANIFEST"
+            grep -q "android.permission.CAMERA" "$MANIFEST" || sed -i '/<manifest/a \    <uses-permission android:name="android.permission.CAMERA" />' "$MANIFEST"
+            grep -q "android.permission.VIBRATE" "$MANIFEST" || sed -i '/<manifest/a \    <uses-permission android:name="android.permission.VIBRATE" />' "$MANIFEST"
+          fi
+
+      - name: 🔑 Grant execute permission for Gradle wrapper
+        run: |
+          chmod +x android/gradlew
+
+      - name: 🔨 Compile Android APK with Gradle
+        run: |
+          cd android
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            echo "Building Release APK..."
+            ./gradlew assembleRelease --no-daemon
+          else
+            echo "Building Debug APK..."
+            ./gradlew assembleDebug --no-daemon
+          fi
+
+      - name: 📦 Prepare Output APK & Calculate Checksum
+        id: prepare_apk
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          mkdir -p release-output
+
+          if [ "$BUILD_TYPE" = "release" ]; then
+            SOURCE_APK=$(find android/app/build/outputs/apk/release/ -name "*.apk" | head -n 1)
+          else
+            SOURCE_APK=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -n 1)
+          fi
+
+          if [ -z "$SOURCE_APK" ]; then
+            echo "Error: APK file not found!"
+            find android/app/build/outputs/ -type f
+            exit 1
+          fi
+
+          APK_NAME="Rubel-AI-Assistant-${VERSION}-${BUILD_TYPE}.apk"
+          cp "$SOURCE_APK" "release-output/$APK_NAME"
+          
+          # Calculate SHA-256
+          cd release-output
+          sha256sum "$APK_NAME" > "${APK_NAME}.sha256"
+          echo "APK generated: $APK_NAME"
+          cat "${APK_NAME}.sha256"
+          cd ..
+
+          echo "apk_path=release-output/$APK_NAME" >> $GITHUB_OUTPUT
+          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: 🚀 Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepare_apk.outputs.apk_name }}
+          path: release-output/*
+          retention-days: 30
+
+      - name: 🏷️ Publish to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prepare_apk.outputs.version }}
+          name: "Rubel AI Assistant ${{ steps.prepare_apk.outputs.version }} Android APK"
+          body: |
+            ## 🤖 Rubel AI Assistant - Android APK Release
+            
+            স্বাগতম! Rubel AI Assistant এর অফিশিয়াল অ্যান্ড্রয়েড এপিকে (APK) সফলভাবে তৈরি করা হয়েছে।
+
+            ### 📱 অ্যাপের তথ্য ও ফিচারসমূহ:
+            - **সংস্করণ:** `${{ steps.prepare_apk.outputs.version }}`
+            - **প্ল্যাটফর্ম:** Android 8.0+ (Oreo, Pie, 10, 11, 12, 13, 14, 15)
+            - **Google Gemini 2.5/Flash AI** চ্যাট ও মাল্টিমোডাল ইন্টিগ্রেশন
+            - **Firebase Cloud Data Sync** & Authentication
+            - **ক্যামেরা, ভয়েস রেকর্ডিং ও লাইভ স্ক্রিন স্ক্যানার**
+            - **রিয়েলটাইম অফলাইন ক্যাশিং** ও সুপারফাস্ট পারফরম্যান্স
+
+            ### 📲 ইনস্টল করার নিয়ম:
+            1. নিচে দেওয়া `.apk` ফাইলটি সরাসরি আপনার অ্যান্ড্রয়েড ফোনে ডাউনলোড করুন।
+            2. ফাইলটিতে ট্যাপ করে **Install** নির্বাচন করুন।
+            3. যদি *"Unknown Sources"* বা *"Install unknown apps"* বার্তা দেখায়, সেটি **Allow** করে দিন।
+            4. গুগল প্লে প্রটেক্ট সতর্কতা দেখালে **Install anyway** নির্বাচন করুন।
+
+            ### 🔐 ফাইল ভেরিফিকেশন (SHA-256):
+            - `release-output/${{ steps.prepare_apk.outputs.apk_name }}.sha256` ফাইলটি দেখে ইন্টিগ্রিটি যাচাই করতে পারেন।
+          files: |
+            release-output/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

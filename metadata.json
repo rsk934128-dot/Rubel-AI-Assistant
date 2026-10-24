@@ -1,0 +1,12 @@
+{
+  "name": "Rubel AI Assistant \u0026 Coding Studio",
+  "description": "বাংলা ও ইংরেজি ভাষায় কোডিং, লেখালেখি, গবেষণা ও সার্চ গ্রাউন্ডিং সহ পূর্ণাঙ্গ এআই অ্যাসিস্ট্যান্ট।",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation",
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

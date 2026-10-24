@@ -1,0 +1,143 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information synchronized upon login",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Firebase Auth user ID"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User avatar photo URL"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Server last update timestamp"
+        },
+        "status": {
+          "type": "string",
+          "description": "User account activity status (active, inactive, suspended)",
+          "enum": ["active", "inactive", "suspended"]
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "description": "Timestamp of the user's most recent login"
+        }
+      },
+      "required": ["id", "email", "createdAt"]
+    },
+    "ChatSession": {
+      "title": "ChatSession",
+      "description": "Saved conversation sessions belonging to a specific user",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Session UUID identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owner user UID"
+        },
+        "title": {
+          "type": "string",
+          "description": "Meaningful conversation title (max 200 chars)",
+          "maxLength": 200
+        },
+        "mode": {
+          "type": "string",
+          "description": "AI assistant mode",
+          "enum": ["general", "citizen", "coding", "writing", "research", "learning"]
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Creation timestamp in milliseconds"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Last updated timestamp in milliseconds"
+        },
+        "isPinned": {
+          "type": "boolean",
+          "description": "Whether the conversation is pinned to the top of the sidebar"
+        },
+        "pinnedAt": {
+          "type": "number",
+          "description": "Timestamp in milliseconds when session was pinned"
+        },
+        "enableSearch": {
+          "type": "boolean",
+          "description": "Whether Google Search grounding is enabled for this session"
+        }
+      },
+      "required": ["id", "userId", "title", "mode", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual message inside a user chat session",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Message identifier"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Parent session identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Author user ID"
+        },
+        "role": {
+          "type": "string",
+          "description": "Message author role",
+          "enum": ["user", "assistant", "system"]
+        },
+        "content": {
+          "type": "string",
+          "description": "Message text markdown content",
+          "maxLength": 50000
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Unix timestamp in milliseconds"
+        },
+        "citations": {
+          "type": "array",
+          "description": "Web citation titles from Google Search grounding"
+        }
+      },
+      "required": ["id", "sessionId", "userId", "role", "content", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document accessible only to the owner"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "ChatSession",
+      "description": "User private chat sessions collection"
+    },
+    "/users/{userId}/sessions/{sessionId}/messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Messages inside a user private chat session"
+    }
+  }
+}
