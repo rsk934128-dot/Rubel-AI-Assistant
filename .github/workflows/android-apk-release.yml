@@ -43,8 +43,32 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 📱 Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: 📱 Configure Android SDK & Auto-Accept Licenses
+        run: |
+          echo "Setting up Android SDK environment..."
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
+
+          # Automatically accept all licenses non-interactively
+          mkdir -p /usr/local/lib/android/sdk/licenses
+          set +e
+          # Auto-accept licenses using yes pipe
+          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          yes | /usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+
+          # Direct license hashes injection to guarantee Gradle never prompts or fails on licenses
+          printf "\n24333f8a63b1d794309373a034829d45b9a5233a\n84831b9409646a24e07f61495085942137092b1f\nd97546579014444000af96d7262a647d63a870c7\n" > /usr/local/lib/android/sdk/licenses/android-sdk-license
+          printf "\n84831b9409646a24e07f61495085942137092b1f\n" > /usr/local/lib/android/sdk/licenses/android-sdk-preview-license
+          printf "\n33b6a2b64922384166323498a7b0075ad2215787\n" > /usr/local/lib/android/sdk/licenses/google-gdk-license
+          printf "\nd97546579014444000af96d7262a647d63a870c7\n" > /usr/local/lib/android/sdk/licenses/mips-android-sysimage-license
+          printf "\ne9acab5b5fbb560a72cfa4f27c30f4d10488f3d0\n" > /usr/local/lib/android/sdk/licenses/android-googletv-license
+          printf "\n601085b94cd77f0b54ff86406957099fed7926d4\n" > /usr/local/lib/android/sdk/licenses/android-googlexr-license
+          set -e
+          echo "Android SDK and licenses successfully configured!"
 
       - name: 📦 Set up Node.js 20
         uses: actions/setup-node@v4
@@ -64,7 +88,7 @@ jobs:
 
       - name: ⚡ Install Capacitor CLI and Android Platform
         run: |
-          npm install --no-save @capacitor/core @capacitor/cli @capacitor/android
+          npm install --no-save --legacy-peer-deps @capacitor/core @capacitor/cli @capacitor/android
 
       - name: 🔄 Sync / Add Android Platform
         run: |
