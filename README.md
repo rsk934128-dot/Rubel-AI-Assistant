@@ -236,6 +236,13 @@ git push origin v1.0.0
 3. প্রয়োজন হলে *"Install Unknown Apps"* পারমিশন চালু করুন।
 4. Google Play Protect সতর্কতা দেখালে *"More details > Install anyway"* চাপুন।
 
+### 🛠️ Android SDK & `sdkmanager` গাইড (CI/CD অথবা লোকাল বিল্ডের জন্য):
+যদি আপনি নিজস্ব লিনাক্স সার্ভার বা লোকাল সিস্টেমে Android SDK কনফিগার করতে চান:
+- **লাইসেন্স গ্রহণ:** `yes | sdkmanager --licenses`
+- **প্রয়োজনীয় টুলস ইনস্টল:** `sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"`
+- **cmdline-tools 16.0 পাথ:** `/usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager --sdk_root=/usr/local/lib/android/sdk --licenses`
+> 💡 *মনে রাখবেন: আধুনিক Android SDK-তে পুরোনো `tools` কমান্ডটি অবসোলেট (deprecated)। তবে আমাদের GitHub Actions পাইপলাইন (`android-actions/setup-android@v3`) স্বয়ংক্রিয়ভাবে ক্লাউড সার্ভারে সমস্ত লাইসেন্স ও SDK সেটআপ করে দেয়।*
+
 ---
 
 ## 🔒 নিরাপত্তা ও ডাটা প্রটেকশন (Security & Privacy)

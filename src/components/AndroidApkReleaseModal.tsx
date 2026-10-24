@@ -123,7 +123,7 @@ git push origin ${versionInput}`;
             }`}
           >
             <Cpu className="w-4 h-4" />
-            অ্যাপ কনফিগারেশন ও স্পেক্স
+            অ্যাপ স্পেক্স ও CLI (sdkmanager)
           </button>
         </div>
 
@@ -362,6 +362,52 @@ git push origin ${versionInput}`;
                     <Check className="w-3 h-3 text-emerald-500" /> Firebase Sync
                   </span>
                 </div>
+              </div>
+
+              {/* sdkmanager CLI Guide */}
+              <div className="p-4 rounded-xl bg-stone-900 text-stone-100 border border-stone-800 space-y-3 font-mono text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-emerald-400 font-bold">
+                    <Terminal className="w-4 h-4" />
+                    <span>Android SDK &amp; sdkmanager সঠিক কমান্ডসমূহ:</span>
+                  </div>
+                  <span className="text-[10px] text-stone-400 font-sans px-2 py-0.5 rounded bg-stone-800">
+                    CI / Linux Terminal
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-[11px] font-sans text-stone-300">
+                  <p>
+                    💡 <strong className="text-white">sdkmanager tools</strong> কমান্ডে পুরোনো <code className="text-amber-400 font-mono">tools</code> প্যাকেজ অবসোলেট (deprecated)। আধুনিক SDK (cmdline-tools 16.0/latest) তে নিচের কমান্ডগুলো ব্যবহার করুন:
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="p-2.5 rounded-lg bg-stone-950 border border-stone-800">
+                    <div className="text-[10px] text-stone-400 font-sans mb-1">১. সমস্ত লাইসেন্স অটো অ্যাকসেপ্ট করা:</div>
+                    <code className="text-emerald-400 select-all block">
+                      yes | sdkmanager --licenses
+                    </code>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg bg-stone-950 border border-stone-800">
+                    <div className="text-[10px] text-stone-400 font-sans mb-1">২. প্রয়োজনীয় প্ল্যাটফর্ম ও বিল্ড-টুলস ইনস্টল করা:</div>
+                    <code className="text-emerald-400 select-all block break-all">
+                      sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+                    </code>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg bg-stone-950 border border-stone-800">
+                    <div className="text-[10px] text-stone-400 font-sans mb-1">৩. পূর্ণাঙ্গ পাথ সহ (যদি PATH-এ যুক্ত না থাকে):</div>
+                    <code className="text-emerald-400 select-all block break-all">
+                      /usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager --sdk_root=/usr/local/lib/android/sdk --licenses
+                    </code>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-stone-400 font-sans pt-1">
+                  ✨ <strong>টিপস:</strong> আপনি যখন GitHub Actions-এ বিল্ড চালাবেন, তখন <code className="text-teal-400">android-actions/setup-android@v3</code> অ্যাকশন স্বয়ংক্রিয়ভাবে এই সমস্ত লাইসেন্স ও টুলস কনফিগার করে দেয়, তাই ম্যানুয়ালি কোনো কমান্ড রান করার প্রয়োজন পড়ে না।
+                </p>
               </div>
             </div>
           )}
