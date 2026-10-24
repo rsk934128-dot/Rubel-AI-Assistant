@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Main Background Gradient -->
+    <linearGradient id="logoBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#065f46" />
+      <stop offset="50%" stop-color="#047857" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+
+    <!-- Glowing Inner Gradient -->
+    <linearGradient id="logoCoreGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="50%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+
+    <!-- Sparkle Gold/Emerald Accent -->
+    <linearGradient id="logoSparkleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#6ee7b7" />
+      <stop offset="100%" stop-color="#34d399" />
+    </linearGradient>
+
+    <!-- Center Card Shadow -->
+    <filter id="logoShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.4" />
+    </filter>
+  </defs>
+
+  <!-- Squircle Base Frame -->
+  <rect width="512" height="512" rx="112" fill="url(#logoBgGrad)" />
+
+  <!-- Subtle Inner Accent Border -->
+  <rect
+    x="12"
+    y="12"
+    width="488"
+    height="488"
+    rx="102"
+    fill="none"
+    stroke="#6ee7b7"
+    stroke-width="6"
+    stroke-opacity="0.3"
+  />
+
+  <!-- Inner Dark Tech Slate Layer -->
+  <rect
+    x="52"
+    y="52"
+    width="408"
+    height="408"
+    rx="82"
+    fill="#0f172a"
+    filter="url(#logoShadow)"
+    stroke="#10b981"
+    stroke-width="3.5"
+    stroke-opacity="0.45"
+  />
+
+  <!-- Central Geometric Symbol -->
+  <g transform="translate(256, 256)">
+    <!-- Subtle Neural Connection Ring -->
+    <circle
+      cx="0"
+      cy="0"
+      r="105"
+      fill="none"
+      stroke="#059669"
+      stroke-width="3"
+      stroke-dasharray="6 8"
+      stroke-opacity="0.4"
+    />
+
+    <!-- Left Code Bracket: < -->
+    <path
+      d="M-85,-65 L-150,0 L-85,65"
+      fill="none"
+      stroke="url(#logoCoreGrad)"
+      stroke-width="26"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- Right Code Bracket: > -->
+    <path
+      d="M85,-65 L150,0 L85,65"
+      fill="none"
+      stroke="url(#logoCoreGrad)"
+      stroke-width="26"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- Modern Forward Tech Slash: / -->
+    <path
+      d="M20,-90 L-20,90"
+      fill="none"
+      stroke="#10b981"
+      stroke-width="14"
+      stroke-linecap="round"
+      stroke-opacity="0.35"
+    />
+
+    <!-- Core AI Intelligence Sparkle Star: ✦ -->
+    <path
+      d="M0,-60 C0,-14 -14,0 -60,0 C-14,0 0,14 0,60 C0,14 14,0 60,0 C14,0 0,-14 0,-60 Z"
+      fill="url(#logoSparkleGrad)"
+    />
+
+    <!-- Center Glowing Core Dot -->
+    <circle cx="0" cy="0" r="10" fill="#ffffff" />
+
+    <!-- Corner Orbiting Neural Nodes -->
+    <circle cx="-150" cy="0" r="11" fill="#6ee7b7" />
+    <circle cx="150" cy="0" r="11" fill="#6ee7b7" />
+    <circle cx="0" cy="-105" r="9" fill="#34d399" />
+    <circle cx="0" cy="105" r="9" fill="#34d399" />
+  </g>
+</svg>

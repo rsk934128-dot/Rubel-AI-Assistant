@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Rubel AI Assistant</string>
+    <string name="title_activity_main">Rubel AI Assistant</string>
+    <string name="package_name">com.rubel.aiassistant</string>
+    <string name="custom_url_scheme">com.rubel.aiassistant</string>
+</resources>

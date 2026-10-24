@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <script>(function(){
+  try {
+    var OrigWS = window.WebSocket;
+    if (OrigWS) {
+      window.WebSocket = function(url, protocols) {
+        var urlStr = String(url || '');
+        var isHmr = 
+          urlStr.indexOf('localhost') !== -1 || 
+          urlStr.indexOf('3000') !== -1 || 
+          urlStr.indexOf('vite') !== -1 ||
+          urlStr.indexOf('run.app') !== -1 ||
+          (typeof window !== 'undefined' && window.location && (urlStr.indexOf(window.location.host) !== -1 || urlStr.indexOf(window.location.hostname) !== -1));
+
+        if (isHmr) {
+          var dummyWS = {
+            url: urlStr,
+            readyState: 1,
+            send: function() {},
+            close: function() {},
+            addEventListener: function() {},
+            removeEventListener: function() {},
+            dispatchEvent: function() { return true; },
+            onopen: null,
+            onclose: null,
+            onerror: null,
+            onmessage: null,
+          };
+          setTimeout(function() {
+            if (typeof dummyWS.onopen === 'function') {
+              try { dummyWS.onopen({ type: 'open' }); } catch (err) {}
+            }
+          }, 10);
+          return dummyWS;
+        }
+        return new OrigWS(url, protocols);
+      };
+      window.WebSocket.CONNECTING = 0;
+      window.WebSocket.OPEN = 1;
+      window.WebSocket.CLOSING = 2;
+      window.WebSocket.CLOSED = 3;
+    }
+  } catch(e){}
+
+  var origErr = console.error, origWarn = console.warn, origInfo = console.info, origLog = console.log, origDebug = console.debug;
+  function isVite(args){
+    if(!args || !args.length) return false;
+    for(var i=0; i<args.length; i++){
+      var a = args[i];
+      if (a === null || a === undefined) continue;
+      var str = '';
+      if(typeof a === 'string') str = a;
+      else {
+        try { str = (a.message || '') + ' ' + (a.stack || '') + ' ' + (a.name || '') + ' ' + String(a); } catch(e){}
+      }
+      var lower = str.toLowerCase();
+      if(str.indexOf('[vite]') !== -1 || str.indexOf('vite:') !== -1 || lower.indexOf('[vite]') !== -1 || lower.indexOf('vite') !== -1 || lower.indexOf('websocket') !== -1) return true;
+    }
+    return false;
+  }
+  console.error = function(){ if(!isVite(arguments)) origErr.apply(console, arguments); };
+  console.warn = function(){ if(!isVite(arguments)) origWarn.apply(console, arguments); };
+  console.info = function(){ if(!isVite(arguments)) origInfo.apply(console, arguments); };
+  console.log = function(){ if(!isVite(arguments)) origLog.apply(console, arguments); };
+  console.debug = function(){ if(!isVite(arguments)) origDebug.apply(console, arguments); };
+  window.addEventListener('error', function(e){
+    var m = (e && (e.message || (e.error && e.error.message))) || '';
+    var lower = String(m).toLowerCase();
+    if(lower.indexOf('vite') !== -1 || lower.indexOf('websocket') !== -1){
+      e.preventDefault(); e.stopImmediatePropagation(); return true;
+    }
+  }, true);
+})();</script>
+
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Rubel AI Assistant &amp; Coding Studio</title>
+    <meta name="description" content="বাংলা ও ইংরেজি ভাষায় কোডিং, এআই অ্যাসিস্ট্যান্ট, রিয়েল-টাইম ট্রেডিং বট ও ইউটিউব মিউজিক প্লেয়ার সহ আধুনিক ডিজিটাল ওয়ার্কস্পেস।" />
+    
+    <!-- Filter benign dev-environment logs like [vite] websocket in sandboxed iframe -->
+    <script>
+      (function() {
+        // Intercept Vite HMR WebSocket so it never produces failed connection errors in disabled-HMR sandbox
+        try {
+          var OrigWS = window.WebSocket;
+          if (OrigWS) {
+            window.WebSocket = function(url, protocols) {
+              var urlStr = String(url || '');
+              var isHmr = 
+                urlStr.indexOf('localhost') !== -1 || 
+                urlStr.indexOf('3000') !== -1 || 
+                urlStr.indexOf('vite') !== -1 ||
+                urlStr.indexOf('run.app') !== -1 ||
+                (typeof window !== 'undefined' && window.location && (urlStr.indexOf(window.location.host) !== -1 || urlStr.indexOf(window.location.hostname) !== -1));
+              
+              if (isHmr) {
+                var dummyWS = {
+                  url: urlStr,
+                  readyState: 1, // WebSocket.OPEN
+                  send: function() {},
+                  close: function() {},
+                  addEventListener: function() {},
+                  removeEventListener: function() {},
+                  dispatchEvent: function() { return true; },
+                  onopen: null,
+                  onclose: null,
+                  onerror: null,
+                  onmessage: null,
+                };
+                setTimeout(function() {
+                  if (typeof dummyWS.onopen === 'function') {
+                    try { dummyWS.onopen({ type: 'open' }); } catch (err) {}
+                  }
+                }, 10);
+                return dummyWS;
+              }
+              return new OrigWS(url, protocols);
+            };
+            window.WebSocket.CONNECTING = 0;
+            window.WebSocket.OPEN = 1;
+            window.WebSocket.CLOSING = 2;
+            window.WebSocket.CLOSED = 3;
+          }
+        } catch (e) {}
+
+        function shouldFilter(args) {
+          if (!args || !args.length) return false;
+          for (var i = 0; i < args.length; i++) {
+            var a = args[i];
+            if (a === null || a === undefined) continue;
+            var str = '';
+            if (typeof a === 'string') {
+              str = a;
+            } else {
+              try { str = (a.message || '') + ' ' + (a.stack || '') + ' ' + (a.name || '') + ' ' + String(a); } catch (err) {}
+            }
+            var lower = str.toLowerCase();
+            if (
+              str.indexOf('[vite]') !== -1 ||
+              str.indexOf('vite:') !== -1 ||
+              lower.indexOf('[vite]') !== -1 ||
+              lower.indexOf('vite') !== -1 ||
+              lower.indexOf('websocket') !== -1 ||
+              str.indexOf('@firebase/firestore') !== -1 ||
+              str.indexOf('Could not reach Cloud Firestore') !== -1 ||
+              str.indexOf('code=unavailable') !== -1 ||
+              str.indexOf('the client is offline') !== -1
+            ) {
+              return true;
+            }
+          }
+          return false;
+        }
+
+        ['error', 'warn', 'info', 'log', 'debug'].forEach(function(m) {
+          var orig = console[m];
+          if (!orig) return;
+          console[m] = function() {
+            if (shouldFilter(arguments)) return;
+            orig.apply(console, arguments);
+          };
+        });
+
+        window.addEventListener('error', function(e) {
+          var msg = (e && (e.message || (e.error && e.error.message))) || '';
+          var src = (e && (e.filename || '')) || '';
+          var lower = String(msg).toLowerCase();
+          if (
+            lower.indexOf('vite') !== -1 ||
+            lower.indexOf('websocket') !== -1 ||
+            lower.indexOf('firestore') !== -1 ||
+            src.indexOf('@vite/client') !== -1
+          ) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(e) {
+          var reason = (e && e.reason) || '';
+          var str = typeof reason === 'string' ? reason : (reason && reason.message) || String(reason);
+          var lower = str.toLowerCase();
+          if (
+            lower.indexOf('vite') !== -1 ||
+            lower.indexOf('websocket') !== -1 ||
+            lower.indexOf('firestore') !== -1
+          ) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+
+        // Hide and remove any vite error overlay
+        try {
+          var observer = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+              var added = mutations[i].addedNodes;
+              for (var j = 0; j < added.length; j++) {
+                if (added[j].nodeName && added[j].nodeName.toLowerCase() === 'vite-error-overlay') {
+                  added[j].remove();
+                }
+              }
+            }
+          });
+          observer.observe(document.documentElement, { childList: true, subtree: true });
+        } catch(e) {}
+      })();
+    </script>
+    <style>vite-error-overlay{visibility:hidden!important;opacity:0!important;pointer-events:none!important;display:none!important}</style>
+    
+    <!-- PWA & Mobile Web Capabilities -->
+    <meta name="theme-color" content="#059669" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Rubel AI" />
+    <meta name="application-name" content="Rubel AI Assistant &amp; Coding Studio" />
+    
+    <!-- Icons & Favicons -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/pwa-512x512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="mask-icon" href="/icon.svg" color="#059669" />
+
+    <!-- OpenGraph & Social Sharing Meta Tags (WhatsApp, Facebook, Discord, Telegram, LinkedIn, Skype, Messenger) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Rubel AI Assistant &amp; Coding Studio" />
+    <meta property="og:title" content="Rubel AI Assistant &amp; Coding Studio" />
+    <meta property="og:description" content="বাংলা ও ইংরেজি ভাষায় কোডিং, এআই অ্যাসিস্ট্যান্ট, রিয়েল-টাইম ট্রেডিং বট ও ইউটিউব মিউজিক প্লেয়ার সহ আধুনিক ডিজিটাল ওয়ার্কস্পেস।" />
+    
+    <!-- Primary 1200x630 Large Card Banner for Social Media -->
+    <meta property="og:image" content="https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/og-banner.png" />
+    <meta property="og:image:secure_url" content="https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/og-banner.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Rubel AI Assistant &amp; Coding Studio Official Logo &amp; Platform" />
+    
+    <!-- Secondary 512x512 Square Logo for WhatsApp, Telegram & Mobile Messaging Previews -->
+    <meta property="og:image" content="https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/logo-share.png" />
+    <meta property="og:image:secure_url" content="https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/logo-share.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="Rubel AI Official Logo" />
+
+    <!-- Twitter / X Card Tags -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Rubel AI Assistant &amp; Coding Studio" />
+    <meta name="twitter:description" content="বাংলা ও ইংরেজি ভাষায় কোডিং, এআই অ্যাসিস্ট্যান্ট, রিয়েল-টাইম ট্রেডিং বট ও ইউটিউব মিউজিক প্লেয়ার সহ আধুনিক ডিজিটাল ওয়ার্কস্পেস।" />
+    <meta name="twitter:image" content="https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/og-banner.png" />
+    <meta name="twitter:image:alt" content="Rubel AI Assistant &amp; Coding Studio" />
+
+    <!-- Schema.org Structured Data (JSON-LD) for Search Engines & Crawlers -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Rubel AI Assistant & Coding Studio",
+      "alternateName": "Rubel AI",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "All",
+      "description": "বাংলা ও ইংরেজি ভাষায় কোডিং, এআই অ্যাসিস্ট্যান্ট, রিয়েল-টাইম ট্রেডিং বট ও ইউটিউব মিউজিক প্লেয়ার সহ আধুনিক ডিজিটাল ওয়ার্কস্পেস।",
+      "image": "https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/og-banner.png",
+      "logo": "https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app/logo-share.png",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      }
+    }
+    </script>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Hind+Siliguri:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="/assets/index-B8IzDke9.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CbQZER1X.css">
+  <link rel="manifest" href="/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script></head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
