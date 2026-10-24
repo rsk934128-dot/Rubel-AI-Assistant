@@ -32,7 +32,7 @@ export const AndroidApkReleaseModal: React.FC<AndroidApkReleaseModalProps> = ({
   const [activeTab, setActiveTab] = useState<'workflow' | 'guide' | 'specs'>('workflow');
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [versionInput, setVersionInput] = useState('v1.0.0');
-  const [repoUrlInput, setRepoUrlInput] = useState('https://github.com/rubels1k994/rubel-ai-assistant');
+  const [repoUrlInput, setRepoUrlInput] = useState('https://github.com/rsk934128-dot/Rubel-AI-Assistant');
 
   if (!isOpen) return null;
 
@@ -225,7 +225,7 @@ git push origin ${versionInput}`;
 
                 <div className="pt-2 flex flex-wrap gap-2.5">
                   <a
-                    href="https://github.com/rubels1k994/rubel-ai-assistant/actions"
+                    href="https://github.com/rsk934128-dot/Rubel-AI-Assistant/actions"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition"
@@ -235,7 +235,7 @@ git push origin ${versionInput}`;
                     <ExternalLink className="w-3 h-3 opacity-70" />
                   </a>
                   <a
-                    href="https://github.com/rubels1k994/rubel-ai-assistant/releases"
+                    href="https://github.com/rsk934128-dot/Rubel-AI-Assistant/releases"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-stone-200 dark:bg-stone-800 hover:bg-stone-300 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-200 transition"
