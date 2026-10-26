@@ -68,8 +68,8 @@ jobs:
           printf "\ne9acab5b5fbb560a72cfa4f27c30f4d10488f3d0\n" > /usr/local/lib/android/sdk/licenses/android-googletv-license
           printf "\n601085b94cd77f0b54ff86406957099fed7926d4\n" > /usr/local/lib/android/sdk/licenses/android-googlexr-license
 
-          # Install Android 35 and 34 platforms and build-tools
-          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "platforms;android-34" "build-tools;35.0.0" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          # Install Android 35, 34 and 36 platforms and build-tools
+          /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "platforms;android-34" "platforms;android-36" "build-tools;35.0.0" "build-tools;34.0.0" > /dev/null 2>&1 || true
           set -e
           echo "Android SDK and licenses successfully configured!"
 
@@ -113,6 +113,24 @@ jobs:
           echo "sdk.dir=/usr/local/lib/android/sdk" > android/local.properties
           cat android/local.properties
 
+          # Guarantee colors.xml exists in app res/values
+          mkdir -p android/app/src/main/res/values
+          if [ ! -f "android/app/src/main/res/values/colors.xml" ]; then
+            cat << 'EOF' > android/app/src/main/res/values/colors.xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#10b981</color>
+    <color name="colorPrimaryDark">#059669</color>
+    <color name="colorAccent">#10b981</color>
+</resources>
+EOF
+          fi
+
+          # Ensure gradle.properties defines SDK versions for subproject properties
+          grep -q "compileSdkVersion" android/gradle.properties || echo "compileSdkVersion=35" >> android/gradle.properties
+          grep -q "targetSdkVersion" android/gradle.properties || echo "targetSdkVersion=35" >> android/gradle.properties
+          grep -q "minSdkVersion" android/gradle.properties || echo "minSdkVersion=24" >> android/gradle.properties
+
       - name: 🛡️ Ensure Android Permissions in Manifest
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
@@ -135,12 +153,13 @@ jobs:
           cd android
           chmod +x gradlew
           BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          GRADLE_ARGS="-PcompileSdkVersion=35 -PtargetSdkVersion=35 -PminSdkVersion=24 --no-daemon --stacktrace"
           if [ "$BUILD_TYPE" = "release" ]; then
             echo "Building Release APK..."
-            ./gradlew assembleRelease --no-daemon --stacktrace
+            ./gradlew assembleRelease $GRADLE_ARGS
           else
             echo "Building Debug APK..."
-            ./gradlew assembleDebug --no-daemon --stacktrace
+            ./gradlew assembleDebug $GRADLE_ARGS
           fi
 
       - name: 📦 Prepare Output APK & Calculate Checksum

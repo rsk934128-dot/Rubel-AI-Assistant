@@ -22,6 +22,11 @@ allprojects {
         google()
         mavenCentral()
     }
+    ext {
+        compileSdkVersion = 35
+        targetSdkVersion = 35
+        minSdkVersion = 24
+    }
 }
 
 task clean(type: Delete) {
