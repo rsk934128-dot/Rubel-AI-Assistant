@@ -22,6 +22,12 @@ export interface DirectGeminiStreamOptions {
 }
 
 export function getDirectGeminiApiKey(): string {
+  try {
+    const customKey = typeof window !== 'undefined' ? localStorage.getItem('custom_gemini_api_key') : null;
+    if (customKey && customKey.trim().length > 10) {
+      return customKey.trim();
+    }
+  } catch (e) {}
   const envKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
   return envKey || '';
 }

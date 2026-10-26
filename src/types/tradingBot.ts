@@ -49,3 +49,15 @@ export interface TradingBotSettings {
   webhookUrl: string;
   overlayOpacity: number;
 }
+
+export interface PriceAlert {
+  id: string;
+  asset: string;
+  targetPrice: number;
+  condition: 'ABOVE' | 'BELOW';
+  createdAt: number;
+  triggered: boolean;
+  triggeredAt?: number;
+  note?: string;
+  currentPriceAtCreation?: number;
+}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   X, 
   FileText, 
@@ -11,10 +11,17 @@ import {
   MessageSquare, 
   Sparkles,
   AlertCircle,
-  ArrowLeft
+  ArrowLeft,
+  Copy,
+  ChevronDown
 } from 'lucide-react';
 import { ChatSession } from '../types';
-import { exportChatAsPDF, exportChatAsJSON, exportChatAsMarkdown } from '../utils/exportChat';
+import { 
+  exportChatAsPDF, 
+  exportChatAsJSON, 
+  exportChatAsMarkdown, 
+  copyChatMarkdownToClipboard 
+} from '../utils/exportChat';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -27,6 +34,25 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, sessi
   const [pdfStatus, setPdfStatus] = useState('');
   const [exportedFormat, setExportedFormat] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedMarkdownOption, setSelectedMarkdownOption] = useState<'download' | 'copy'>('download');
+  const [isMarkdownMenuOpen, setIsMarkdownMenuOpen] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+  const markdownMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (markdownMenuRef.current && !markdownMenuRef.current.contains(event.target as Node)) {
+        setIsMarkdownMenuOpen(false);
+      }
+    };
+    if (isMarkdownMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isMarkdownMenuOpen]);
 
   if (!isOpen || !session) return null;
 
@@ -70,6 +96,35 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, sessi
     } catch (err: any) {
       console.error('Markdown export failed:', err);
       setErrorMessage(err.message || 'Markdown ফাইলে এক্সপোর্ট করা সম্ভব হয়নি।');
+    }
+  };
+
+  const handleCopyMarkdown = async () => {
+    try {
+      setErrorMessage(null);
+      const success = await copyChatMarkdownToClipboard(session);
+      if (success) {
+        setIsCopied(true);
+        setExportedFormat('Markdown ক্লিপবোর্ডে কপি করা হয়েছে');
+        setTimeout(() => {
+          setIsCopied(false);
+          setExportedFormat(null);
+        }, 3500);
+      } else {
+        setErrorMessage('ক্লিপবোর্ডে কপি করা সম্ভব হয়নি। অনুগ্রহ করে আবার চেষ্টা করুন।');
+      }
+    } catch (err: any) {
+      console.error('Markdown copy failed:', err);
+      setErrorMessage('ক্লিপবোর্ডে কপি করতে সমস্যা হয়েছে।');
+    }
+  };
+
+  const handleExecuteMarkdownAction = (action?: 'download' | 'copy') => {
+    const act = action || selectedMarkdownOption;
+    if (act === 'copy') {
+      handleCopyMarkdown();
+    } else {
+      handleExportMarkdown();
     }
   };
 
@@ -155,7 +210,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, sessi
           <div className="mx-5 mt-3 p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2 animate-in fade-in">
             <Check className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>
-              <strong>{exportedFormat}</strong> ফাইলটি সফলভাবে ডাউনলোড হয়েছে! আপনার ব্রাউজারের ডাউনলোড ফোল্ডার চেক করুন।
+              {exportedFormat.includes('কপি') ? (
+                <strong>{exportedFormat}</strong>
+              ) : (
+                <>
+                  <strong>{exportedFormat}</strong> ফাইলটি সফলভাবে ডাউনলোড হয়েছে! আপনার ব্রাউজারের ডাউনলোড ফোল্ডার চেক করুন।
+                </>
+              )}
             </span>
           </div>
         )}
@@ -201,7 +262,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, sessi
               id="export-as-pdf-btn"
               onClick={handleExportPDF}
               disabled={isExportingPDF}
-              className="sm:self-center shrink-0 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white shadow-xs transition-colors"
+              className="sm:self-center shrink-0 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white shadow-xs transition-colors cursor-pointer"
             >
               {isExportingPDF ? (
                 <>
@@ -241,42 +302,187 @@ export const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, sessi
             <button
               id="export-as-json-btn"
               onClick={handleExportJSON}
-              className="sm:self-center shrink-0 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition-colors"
+              className="sm:self-center shrink-0 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition-colors cursor-pointer"
             >
               <Download className="w-4 h-4" />
               <span>JSON ডাউনলোড</span>
             </button>
           </div>
 
-          {/* 3. Markdown Export Option */}
-          <div className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 hover:border-blue-500/50 dark:hover:border-blue-500/50 bg-white dark:bg-stone-900/50 hover:bg-blue-50/20 dark:hover:bg-blue-950/10 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-start gap-3.5">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 mt-0.5">
-                <FileCode className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100">
-                    Markdown ফাইল (.md)
-                  </h3>
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">
-                    নোটস ও ডকুমেন্ট
-                  </span>
+          {/* 3. Markdown Export Option with Dropdown Menu & Selectable Actions */}
+          <div className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 hover:border-blue-500/50 dark:hover:border-blue-500/50 bg-white dark:bg-stone-900/50 hover:bg-blue-50/20 dark:hover:bg-blue-950/10 transition-all flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 mt-0.5">
+                  <FileCode className="w-5 h-5" />
                 </div>
-                <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 leading-relaxed">
-                  Obsidian, Notion, GitHub বা সাধারণ টেক্সট এডিটরে ব্যবহারের জন্য রিডেবল মার্কডাউন ফরম্যাট।
-                </p>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100">
+                      Markdown ফরম্যাট (.md)
+                    </h3>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">
+                      নোটস ও ডকুমেন্ট
+                    </span>
+                  </div>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 leading-relaxed">
+                    Obsidian, Notion, GitHub বা টেক্সট এডিটরে ব্যবহারের জন্য রিডেবল মার্কডাউন। ডাউনলোড অথবা সরাসরি ক্লিপবোর্ডে কপি করুন।
+                  </p>
+                </div>
+              </div>
+
+              {/* Split Button / Menu Control */}
+              <div className="relative sm:self-center shrink-0" ref={markdownMenuRef}>
+                <div className="inline-flex rounded-xl shadow-xs overflow-hidden border border-blue-600 dark:border-blue-500">
+                  {/* Primary Action Button */}
+                  <button
+                    id="export-as-markdown-btn"
+                    onClick={() => handleExecuteMarkdownAction()}
+                    className="flex items-center gap-2 px-3.5 py-2.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors cursor-pointer"
+                    title={selectedMarkdownOption === 'copy' ? 'ক্লিপবোর্ডে কপি করুন' : 'Markdown ফাইল ডাউনলোড করুন'}
+                  >
+                    {selectedMarkdownOption === 'copy' ? (
+                      isCopied ? (
+                        <>
+                          <Check className="w-4 h-4 text-emerald-200" />
+                          <span>কপি হয়েছে!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span>Copy to Clipboard</span>
+                        </>
+                      )
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>Download as Markdown</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Dropdown Menu Toggle Button */}
+                  <button
+                    id="markdown-menu-toggle-btn"
+                    type="button"
+                    onClick={() => setIsMarkdownMenuOpen((prev) => !prev)}
+                    className="px-2.5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white border-l border-blue-500/50 transition-colors cursor-pointer flex items-center justify-center"
+                    title="Markdown মেনু বিকল্প নির্বাচন করুন (Select Option)"
+                    aria-label="Toggle Markdown Menu"
+                    aria-expanded={isMarkdownMenuOpen}
+                  >
+                    <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isMarkdownMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                </div>
+
+                {/* Dropdown Menu */}
+                {isMarkdownMenuOpen && (
+                  <div
+                    id="markdown-export-menu"
+                    className="absolute right-0 top-full mt-2 w-64 bg-white dark:bg-stone-850 rounded-2xl shadow-xl border border-stone-200 dark:border-stone-700 py-1.5 z-30 animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    <div className="px-3.5 py-1.5 text-[10px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider border-b border-stone-100 dark:border-stone-800">
+                      Markdown অপশন মেনু
+                    </div>
+
+                    {/* Option 1: Download as Markdown */}
+                    <button
+                      type="button"
+                      id="menu-download-markdown-btn"
+                      onClick={() => {
+                        setSelectedMarkdownOption('download');
+                        setIsMarkdownMenuOpen(false);
+                        handleExecuteMarkdownAction('download');
+                      }}
+                      className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between text-xs hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors cursor-pointer ${
+                        selectedMarkdownOption === 'download'
+                          ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-semibold'
+                          : 'text-stone-700 dark:text-stone-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Download className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                        <div>
+                          <div className="font-medium">Download as Markdown</div>
+                          <div className="text-[10px] text-stone-500 dark:text-stone-400">.md ফাইল হিসেবে ডিভাইসে সেভ</div>
+                        </div>
+                      </div>
+                      {selectedMarkdownOption === 'download' && (
+                        <Check className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                      )}
+                    </button>
+
+                    {/* Option 2: Copy to Clipboard */}
+                    <button
+                      type="button"
+                      id="menu-copy-markdown-btn"
+                      onClick={() => {
+                        setSelectedMarkdownOption('copy');
+                        setIsMarkdownMenuOpen(false);
+                        handleExecuteMarkdownAction('copy');
+                      }}
+                      className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between text-xs hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors cursor-pointer ${
+                        selectedMarkdownOption === 'copy'
+                          ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-semibold'
+                          : 'text-stone-700 dark:text-stone-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Copy className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                        <div>
+                          <div className="font-medium">Copy to Clipboard</div>
+                          <div className="text-[10px] text-stone-500 dark:text-stone-400">সরাসরি ক্লিপবোর্ডে কপি করুন</div>
+                        </div>
+                      </div>
+                      {selectedMarkdownOption === 'copy' && (
+                        <Check className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
-            <button
-              id="export-as-markdown-btn"
-              onClick={handleExportMarkdown}
-              className="sm:self-center shrink-0 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              <span>Markdown ডাউনলোড</span>
-            </button>
+            {/* Quick Segmented Toggle Menu Bar for Direct Selection */}
+            <div className="pt-2 border-t border-stone-100 dark:border-stone-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                মেনু বিকল্প নির্বাচন করুন:
+              </span>
+              <div className="inline-flex p-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200 dark:border-stone-700">
+                <button
+                  type="button"
+                  id="tab-download-markdown-btn"
+                  onClick={() => {
+                    setSelectedMarkdownOption('download');
+                    handleExecuteMarkdownAction('download');
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                    selectedMarkdownOption === 'download'
+                      ? 'bg-white dark:bg-stone-700 text-blue-600 dark:text-blue-300 shadow-xs font-semibold'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                  }`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download as Markdown</span>
+                </button>
+                <button
+                  type="button"
+                  id="tab-copy-markdown-btn"
+                  onClick={() => {
+                    setSelectedMarkdownOption('copy');
+                    handleExecuteMarkdownAction('copy');
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                    selectedMarkdownOption === 'copy'
+                      ? 'bg-white dark:bg-stone-700 text-blue-600 dark:text-blue-300 shadow-xs font-semibold'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                  }`}
+                >
+                  {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{isCopied ? 'কপি হয়েছে' : 'Copy to Clipboard'}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

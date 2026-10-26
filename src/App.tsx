@@ -22,6 +22,7 @@ import {
   BarChart3,
   Mail,
   TrendingUp,
+  Key,
 } from 'lucide-react';
 import { TradingScreenBotModal } from './components/TradingScreenBotModal';
 import { FloatingTradingHUD } from './components/FloatingTradingHUD';
@@ -63,6 +64,7 @@ import { UniversalShareReceiverModal } from './components/UniversalShareReceiver
 import { RubelNetFirebaseManagerModal } from './components/RubelNetFirebaseManagerModal';
 import { GeminiAuthModal } from './components/GeminiAuthModal';
 import { AndroidApkReleaseModal } from './components/AndroidApkReleaseModal';
+import { ApiKeyModal } from './components/ApiKeyModal';
 import { ScrollNavigationButtons } from './components/ScrollNavigationButtons';
 import { GlobalDropZone } from './components/GlobalDropZone';
 import { parseIncomingShareParams, InboundSharedContent } from './utils/shareUtils';
@@ -135,6 +137,9 @@ export default function App() {
   const [metricsModalOpen, setMetricsModalOpen] = useState(false);
   const [mobileProgramsHubOpen, setMobileProgramsHubOpen] = useState(false);
   const [androidApkModalOpen, setAndroidApkModalOpen] = useState(false);
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(false);
+  const [apiKeyModalReason, setApiKeyModalReason] = useState<'leaked' | 'missing' | 'general'>('general');
+  const [hasLeakedApiKey, setHasLeakedApiKey] = useState(false);
   const [isChatInputFocused, setIsChatInputFocused] = useState(false);
   const [emailComposerOpen, setEmailComposerOpen] = useState(false);
   const [emailComposerConfig, setEmailComposerConfig] = useState<{
@@ -738,9 +743,15 @@ export default function App() {
       // We perform an automatic fast-retry on transient 5xx errors before failing.
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
+          const customKey = typeof window !== 'undefined' ? localStorage.getItem('custom_gemini_api_key') : null;
+          const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (customKey && customKey.trim().length > 10) {
+            requestHeaders['x-gemini-api-key'] = customKey.trim();
+          }
+
           response = await fetch('/api/chat/stream', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: requestHeaders,
             body: JSON.stringify({
               messages: updatedMessages.map((m) => ({ role: m.role, text: m.text })),
               prompt: promptText,
@@ -848,7 +859,7 @@ export default function App() {
         try {
           const errorData = await response.json();
           if (errorData?.error) {
-            errorMsg = errorData.error;
+            errorMsg = typeof errorData.error === 'string' ? errorData.error : JSON.stringify(errorData.error);
           }
         } catch {
           if (response.status === 404) {
@@ -860,6 +871,14 @@ export default function App() {
           } else if (response.status === 429) {
             errorMsg = 'এআই কোটা সীমা (Rate Limit 429) সাময়িকভাবে শেষ হয়েছে। অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করে পুনরায় চেষ্টা করুন।';
           }
+        }
+
+        const lowerError = String(errorMsg).toLowerCase();
+        if (response.status === 403 || lowerError.includes('leaked') || lowerError.includes('permission_denied')) {
+          setHasLeakedApiKey(true);
+          setApiKeyModalReason('leaked');
+          setApiKeyModalOpen(true);
+          errorMsg = '⚠️ আপনার Gemini API Key টি ফাঁস (Leaked) হওয়ার কারণে গুগল নিরাপত্তা জনিত কারণে এটি ব্লক করেছে (403 Forbidden / Leaked API Key)। প্রদর্শিত উইন্ডো থেকে একটি নতুন API Key যুক্ত করে সচল করুন।';
         }
         throw new Error(errorMsg);
       }
@@ -897,6 +916,11 @@ export default function App() {
 
             if (data.error) {
               hasReceivedError = true;
+              if (data.isLeaked || String(data.error).toLowerCase().includes('leaked')) {
+                setHasLeakedApiKey(true);
+                setApiKeyModalReason('leaked');
+                setApiKeyModalOpen(true);
+              }
               updateActiveSession((s) => ({
                 ...s,
                 messages: s.messages.map((m) =>
@@ -1196,7 +1220,39 @@ export default function App() {
                     <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
                   </div>
                 ) : (
-                  <div className="max-w-xl mx-auto p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-blue-50/90 via-indigo-50/70 to-purple-50/90 dark:from-blue-950/40 dark:via-indigo-950/30 dark:to-purple-950/40 border border-blue-200/80 dark:border-blue-900/60 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">
+                  <>
+                    {hasLeakedApiKey && (
+                      <div className="max-w-xl mx-auto mb-3 p-3.5 rounded-2xl bg-gradient-to-r from-amber-50 to-rose-50 dark:from-amber-950/40 dark:to-rose-950/40 border border-amber-300 dark:border-amber-800 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+                        <div className="flex items-center gap-2.5 text-left min-w-0">
+                          <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                            <Key className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-bold text-stone-900 dark:text-stone-100 flex items-center gap-1.5">
+                              Gemini API Key আপডেট প্রয়োজন
+                              <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-rose-100 dark:bg-rose-900 text-rose-800 dark:text-rose-200 font-extrabold">
+                                403 Leaked
+                              </span>
+                            </h4>
+                            <p className="text-[11px] text-stone-600 dark:text-stone-400">
+                              পূর্বের কী-টি গুগল নিষ্ক্রিয় করেছে। ১ মিনিটে ফ্রেশ কী যুক্ত করুন।
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setApiKeyModalReason('leaked');
+                            setApiKeyModalOpen(true);
+                          }}
+                          className="w-full sm:w-auto shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition cursor-pointer"
+                        >
+                          <Key className="w-3.5 h-3.5" />
+                          নতুন Key সেট করুন
+                        </button>
+                      </div>
+                    )}
+                    <div className="max-w-xl mx-auto p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-blue-50/90 via-indigo-50/70 to-purple-50/90 dark:from-blue-950/40 dark:via-indigo-950/30 dark:to-purple-950/40 border border-blue-200/80 dark:border-blue-900/60 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs">
                     <div className="flex items-center gap-2.5 text-left min-w-0">
                       <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-xs shrink-0">
                         <Sparkles className="w-4 h-4" />
@@ -1227,7 +1283,8 @@ export default function App() {
                       </svg>
                       <span>গুগল দিয়ে লগইন</span>
                     </button>
-                  </div>
+                    </div>
+                  </>
                 )}
 
                 {/* Hero Quick Share & Action Buttons */}
@@ -1815,6 +1872,16 @@ export default function App() {
       <AndroidApkReleaseModal
         isOpen={androidApkModalOpen}
         onClose={() => setAndroidApkModalOpen(false)}
+      />
+
+      {/* Gemini API Key Configuration Modal */}
+      <ApiKeyModal
+        isOpen={apiKeyModalOpen}
+        onClose={() => setApiKeyModalOpen(false)}
+        initialReason={apiKeyModalReason}
+        onKeySaved={() => {
+          setHasLeakedApiKey(false);
+        }}
       />
 
       {/* Global Drop Zone for Files, Photos, Links from other apps */}

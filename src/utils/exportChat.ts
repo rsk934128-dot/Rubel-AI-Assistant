@@ -64,13 +64,16 @@ export function exportChatAsJSON(session: ChatSession): void {
 }
 
 /**
- * Exports chat session as a formatted Markdown file
+ * Generates formatted Markdown string from a chat session
  */
-export function exportChatAsMarkdown(session: ChatSession): void {
-  if (!session) return;
+export function generateChatMarkdown(session: ChatSession): string {
+  if (!session) return '';
 
   let content = `# ${session.title}\n\n`;
-  content += `> **তারিখ ও সময়:** ${new Date(session.createdAt).toLocaleString()}\n`;
+  content += `> **তারিখ ও সময়:** ${new Date(session.createdAt).toLocaleString('bn-BD', {
+    dateStyle: 'full',
+    timeStyle: 'medium',
+  })}\n`;
   content += `> **মোড:** ${session.mode}\n`;
   content += `> **মোট বার্তা:** ${session.messages.length}\n`;
   content += `> **উৎস:** AI Assistant & Coding Studio\n\n`;
@@ -79,7 +82,7 @@ export function exportChatAsMarkdown(session: ChatSession): void {
   session.messages.forEach((msg, idx) => {
     const isUser = msg.role === 'user';
     const sender = isUser ? '👤 ব্যবহারকারী (User)' : '🤖 এআই সহকারী (AI Assistant)';
-    const timeStr = new Date(msg.timestamp).toLocaleTimeString();
+    const timeStr = new Date(msg.timestamp).toLocaleTimeString('bn-BD');
     
     content += `### ${idx + 1}. ${sender} — *${timeStr}*\n\n`;
     content += `${msg.text}\n\n`;
@@ -101,6 +104,49 @@ export function exportChatAsMarkdown(session: ChatSession): void {
     content += `---\n\n`;
   });
 
+  return content;
+}
+
+/**
+ * Copies chat session as Markdown text to clipboard
+ */
+export async function copyChatMarkdownToClipboard(session: ChatSession): Promise<boolean> {
+  if (!session) return false;
+  const markdownText = generateChatMarkdown(session);
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(markdownText);
+      return true;
+    }
+  } catch (err) {
+    console.warn('navigator.clipboard failed, attempting fallback textarea copy:', err);
+  }
+
+  // Fallback for older browsers or non-HTTPS/iFrame contexts
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = markdownText;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const success = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return success;
+  } catch (fallbackErr) {
+    console.error('Copy to clipboard fallback failed:', fallbackErr);
+    return false;
+  }
+}
+
+/**
+ * Exports chat session as a formatted Markdown file
+ */
+export function exportChatAsMarkdown(session: ChatSession): void {
+  if (!session) return;
+  const content = generateChatMarkdown(session);
   const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
