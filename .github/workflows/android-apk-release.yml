@@ -126,6 +126,12 @@ jobs:
           grep -q "compileSdkVersion" android/gradle.properties || echo "compileSdkVersion=35" >> android/gradle.properties
           grep -q "targetSdkVersion" android/gradle.properties || echo "targetSdkVersion=35" >> android/gradle.properties
           grep -q "minSdkVersion" android/gradle.properties || echo "minSdkVersion=24" >> android/gradle.properties
+          grep -q "android.suppressUnsupportedCompileSdk" android/gradle.properties || echo "android.suppressUnsupportedCompileSdk=35" >> android/gradle.properties
+
+          # Prevent duplicate Kotlin stdlib classes (kotlin-stdlib-jdk7/jdk8 vs kotlin-stdlib)
+          if ! grep -q "kotlin-stdlib-jdk7" android/build.gradle; then
+            sed -i '/allprojects {/a \    configurations.configureEach { exclude group: "org.jetbrains.kotlin", module: "kotlin-stdlib-jdk7"; exclude group: "org.jetbrains.kotlin", module: "kotlin-stdlib-jdk8" }' android/build.gradle
+          fi
 
       - name: 🛡️ Ensure Android Permissions in Manifest
         run: |
