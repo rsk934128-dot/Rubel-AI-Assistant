@@ -28,6 +28,9 @@ permissions:
   contents: write
   packages: write
 
+env:
+  ACTIONS_RUNNER_FORCE_NODE24: 'true'
+
 jobs:
   build-android-apk:
     name: Build Android APK
