@@ -167,7 +167,14 @@ jobs:
       - name: 📦 Prepare Output APK & Calculate Checksum
         id: prepare_apk
         run: |
-          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="v1.0.${{ github.run_number }}"
+          fi
+
           BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
           mkdir -p release-output
 
@@ -205,16 +212,17 @@ jobs:
       - name: 🚀 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.prepare_apk.outputs.apk_name }}
+          name: Rubel-AI-Assistant-APK
           path: release-output/*
           retention-days: 30
 
       - name: 🏷️ Publish to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == true
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.prepare_apk.outputs.version }}
-          name: "Rubel AI Assistant ${{ steps.prepare_apk.outputs.version }} Android APK"
+          name: "Rubel AI Assistant ${{ steps.prepare_apk.outputs.version }} (Android APK)"
+          make_latest: true
           body: |
             ## 🤖 Rubel AI Assistant - Android APK Release
             
@@ -235,7 +243,7 @@ jobs:
             4. গুগল প্লে প্রটেক্ট সতর্কতা দেখালে **Install anyway** নির্বাচন করুন।
 
             ### 🔐 ফাইল ভেরিফিকেশন (SHA-256):
-            - `release-output/${{ steps.prepare_apk.outputs.apk_name }}.sha256` ফাইলটি দেখে ইন্টিগ্রিটি যাচাই করতে পারেন।
+            - `${{ steps.prepare_apk.outputs.apk_name }}.sha256` ফাইলটি দেখে ইন্টিগ্রিটি যাচাই করতে পারেন।
           files: |
             release-output/*
           draft: false

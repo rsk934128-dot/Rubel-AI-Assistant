@@ -79,6 +79,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// AI Studio Internal Control Plane status & health endpoint
+app.all(['/__aistudio_internal_control_plane/dev/status', '/__aistudio_internal_control_plane*'], (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  return res.status(200).json({
+    status: 'ok',
+    ready: true,
+    time: new Date().toISOString(),
+  });
+});
+
+app.all(['/healthz', '/_health', '/api/healthz'], (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  return res.status(200).json({
+    status: 'ok',
+    ready: true,
+  });
+});
+
 // Root API status endpoint
 app.all(['/api', '/api/'], (req, res) => {
   res.json({
@@ -2604,12 +2622,7 @@ function serveStaticProduction() {
 }
 
 async function startServer() {
-  const distExists = fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'));
-  const isDevScript = process.env.npm_lifecycle_event === 'dev';
-  const isProduction =
-    process.env.NODE_ENV === 'production' ||
-    process.env.npm_lifecycle_event === 'start' ||
-    (distExists && !isDevScript);
+  const isProduction = process.env.NODE_ENV === 'production';
 
   if (!isProduction) {
     try {
