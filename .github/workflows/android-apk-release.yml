@@ -116,14 +116,7 @@ jobs:
           # Guarantee colors.xml exists in app res/values
           mkdir -p android/app/src/main/res/values
           if [ ! -f "android/app/src/main/res/values/colors.xml" ]; then
-            cat << 'EOF' > android/app/src/main/res/values/colors.xml
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="colorPrimary">#10b981</color>
-    <color name="colorPrimaryDark">#059669</color>
-    <color name="colorAccent">#10b981</color>
-</resources>
-EOF
+            printf "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n    <color name=\"colorPrimary\">#10b981</color>\n    <color name=\"colorPrimaryDark\">#059669</color>\n    <color name=\"colorAccent\">#10b981</color>\n</resources>\n" > android/app/src/main/res/values/colors.xml
           fi
 
           # Ensure gradle.properties defines SDK versions for subproject properties
