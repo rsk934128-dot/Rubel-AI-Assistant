@@ -23,6 +23,9 @@ import {
   Mail,
   TrendingUp,
   Key,
+  WifiOff,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { TradingScreenBotModal } from './components/TradingScreenBotModal';
 import { FloatingTradingHUD } from './components/FloatingTradingHUD';
@@ -70,6 +73,18 @@ import { GlobalDropZone } from './components/GlobalDropZone';
 import { parseIncomingShareParams, InboundSharedContent } from './utils/shareUtils';
 import { useAuth } from './context/AuthContext';
 import { saveSessionToCloud, loadSessionsFromCloud, deleteSessionFromCloud } from './lib/firebase';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
+import {
+  saveSessionToIndexedDB,
+  saveAllSessionsToIndexedDB,
+  getAllSessionsFromIndexedDB,
+  deleteSessionFromIndexedDB,
+  enqueuePendingSync,
+  getPendingSyncQueue,
+  syncPendingToFirestore,
+  setLastFirestoreSyncTime,
+  getLastFirestoreSyncTime,
+} from './lib/indexedDb';
 import workspaceHeroImg from './assets/images/ai_workspace_hero_1790066671032.jpg';
 import apiArchitectureImg from './assets/images/api_architecture_graphic_1790066692425.jpg';
 
@@ -375,6 +390,11 @@ export default function App() {
 
   const { user, setIsSyncing } = useAuth();
 
+  // Online / Offline & IndexedDB state
+  const isOnline = useOnlineStatus();
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
+  const [syncToastMessage, setSyncToastMessage] = useState<string | null>(null);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatScrollContainerRef = useRef<HTMLDivElement>(null);
@@ -392,9 +412,56 @@ export default function App() {
   const mode = activeSession?.mode || 'general';
   const enableSearch = activeSession?.enableSearch ?? false;
 
-  // Persist sessions locally
+  // Hydrate chat sessions from IndexedDB on startup (full offline support)
+  useEffect(() => {
+    let isCancelled = false;
+
+    const hydrateFromIndexedDB = async () => {
+      try {
+        const idbSessions = await getAllSessionsFromIndexedDB();
+        if (isCancelled) return;
+
+        if (idbSessions && idbSessions.length > 0) {
+          setSessions((prev) => {
+            const map = new Map<string, ChatSession>();
+            prev.forEach((s) => map.set(s.id, s));
+            idbSessions.forEach((s) => {
+              const existing = map.get(s.id);
+              if (!existing || s.updatedAt >= existing.updatedAt) {
+                map.set(s.id, s);
+              }
+            });
+            return Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+          });
+        } else {
+          // If IndexedDB is empty but state has sessions, populate IndexedDB
+          if (sessions.length > 0) {
+            await saveAllSessionsToIndexedDB(sessions);
+          }
+        }
+
+        const pending = await getPendingSyncQueue();
+        if (!isCancelled) {
+          setPendingSyncCount(pending.length);
+        }
+      } catch (err) {
+        console.warn('Failed to load sessions from IndexedDB:', err);
+      }
+    };
+
+    hydrateFromIndexedDB();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  // Persist sessions locally to both localStorage and IndexedDB
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    saveAllSessionsToIndexedDB(sessions).catch((err) =>
+      console.warn('Failed to persist sessions to IndexedDB:', err)
+    );
   }, [sessions]);
 
   // Sync with Firestore when user logs in
@@ -421,6 +488,7 @@ export default function App() {
             });
             return Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
           });
+          setLastFirestoreSyncTime();
         } else {
           // If cloud has no sessions, upload current local non-empty sessions
           for (const s of sessions) {
@@ -428,6 +496,7 @@ export default function App() {
               await saveSessionToCloud(user.uid, s);
             }
           }
+          setLastFirestoreSyncTime();
         }
       } catch (err: any) {
         const msg = err?.message || String(err);
@@ -453,14 +522,16 @@ export default function App() {
     if (!user || !activeSession || activeSession.messages.length === 0) return;
 
     const timer = setTimeout(() => {
-      saveSessionToCloud(user.uid, activeSession).catch((err: any) => {
-        const msg = err?.message || String(err);
-        if (msg.includes('offline') || msg.includes('Could not reach') || msg.includes('unavailable')) {
-          console.info('Auto-sync deferred: Firestore is operating in offline mode.');
-        } else {
-          console.error('Auto-sync to Firestore failed:', err);
-        }
-      });
+      saveSessionToCloud(user.uid, activeSession)
+        .then(() => setLastFirestoreSyncTime())
+        .catch((err: any) => {
+          const msg = err?.message || String(err);
+          if (msg.includes('offline') || msg.includes('Could not reach') || msg.includes('unavailable')) {
+            console.info('Auto-sync deferred: Firestore is operating in offline mode.');
+          } else {
+            console.error('Auto-sync to Firestore failed:', err);
+          }
+        });
     }, 1500);
 
     return () => clearTimeout(timer);
@@ -478,6 +549,8 @@ export default function App() {
       const cloudSessions = await loadSessionsFromCloud(user.uid);
       if (cloudSessions && cloudSessions.length > 0) {
         setSessions(cloudSessions);
+        await saveAllSessionsToIndexedDB(cloudSessions);
+        setLastFirestoreSyncTime();
       }
     } catch (e) {
       console.error('Manual sync error', e);
@@ -485,6 +558,74 @@ export default function App() {
       setIsSyncing(false);
     }
   };
+
+  // Manual trigger to sync pending offline sessions to Firestore
+  const handleSyncPendingNow = async () => {
+    if (!user) {
+      setSyncToastMessage('⚠️ ফায়ারস্টোর ক্লাউডে সিঙ্ক করতে অনুগ্রহ করে লগইন করুন।');
+      setTimeout(() => setSyncToastMessage(null), 4000);
+      return;
+    }
+
+    try {
+      setIsSyncing(true);
+      const res = await syncPendingToFirestore(user.uid);
+      const remaining = await getPendingSyncQueue();
+      setPendingSyncCount(remaining.length);
+
+      if (res.syncedCount > 0) {
+        setSyncToastMessage(`✅ সফলভাবে ${res.syncedCount}টি অফলাইন চ্যাট সেশন ফায়ারস্টোরে সিঙ্ক সম্পন্ন হয়েছে!`);
+        setTimeout(() => setSyncToastMessage(null), 5000);
+      } else if (remaining.length === 0) {
+        setSyncToastMessage('✅ সমস্ত চ্যাট ইতিমধ্যে ফায়ারস্টোরের সাথে সিঙ্ক করা রয়েছে।');
+        setTimeout(() => setSyncToastMessage(null), 3500);
+      }
+    } catch (err) {
+      console.error('Pending sync error:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Trigger automatic sync of pending offline sessions to Firestore when internet is restored
+  useEffect(() => {
+    if (!isOnline || !user?.uid) return;
+
+    let isCancelled = false;
+    const runAutoSync = async () => {
+      try {
+        const queue = await getPendingSyncQueue();
+        if (isCancelled) return;
+        setPendingSyncCount(queue.length);
+
+        if (queue.length > 0) {
+          setIsSyncing(true);
+          const res = await syncPendingToFirestore(user.uid);
+          if (isCancelled) return;
+
+          const remaining = await getPendingSyncQueue();
+          setPendingSyncCount(remaining.length);
+
+          if (res.syncedCount > 0) {
+            setSyncToastMessage(`✅ ${res.syncedCount}টি অফলাইন চ্যাট স্বয়ংক্রিয়ভাবে ফায়ারস্টোরে সিঙ্ক হয়েছে!`);
+            setTimeout(() => {
+              if (!isCancelled) setSyncToastMessage(null);
+            }, 5000);
+          }
+        }
+      } catch (err) {
+        console.warn('Auto sync on online restore failed:', err);
+      } finally {
+        if (!isCancelled) setIsSyncing(false);
+      }
+    };
+
+    const timer = setTimeout(runAutoSync, 1500);
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isOnline, user?.uid]);
 
   // Scroll calculation and navigation handlers for top and bottom navigation buttons
   const handleChatScroll = () => {
@@ -590,6 +731,7 @@ export default function App() {
     if (activeSessionId === id) {
       setActiveSessionId(remaining[0].id);
     }
+    deleteSessionFromIndexedDB(id).catch((err) => console.error('IndexedDB delete error:', err));
     if (user) {
       deleteSessionFromCloud(user.uid, id).catch((err) => console.error('Cloud delete error:', err));
     }
@@ -983,6 +1125,20 @@ export default function App() {
         console.log('Stream aborted by user');
       } else {
         console.error('Error in chat stream:', err);
+        const isNetworkErr =
+          !navigator.onLine ||
+          String(err?.message).toLowerCase().includes('failed to fetch') ||
+          String(err?.message).toLowerCase().includes('networkerror');
+
+        let errorMessage = err.message || 'একটি ত্রুটি ঘটেছে। দয়া করে সেটিংস থেকে GEMINI_API_KEY চেক করুন।';
+        if (isNetworkErr) {
+          errorMessage = '🌐 ইন্টারনেট সংযোগ ব্যাহত হয়েছে। আপনার বার্তাটি লোকাল IndexedDB-তে নিরাপদে সংরক্ষিত রয়েছে এবং পুনরায় অনলাইনে আসলে স্বয়ংক্রিয়ভাবে ক্লাউড ফায়ারস্টোরে সিঙ্ক হবে।';
+          if (activeSession) {
+            enqueuePendingSync(activeSession).catch(console.warn);
+            getPendingSyncQueue().then((q) => setPendingSyncCount(q.length)).catch(console.warn);
+          }
+        }
+
         updateActiveSession((s) => ({
           ...s,
           messages: s.messages.map((m) =>
@@ -990,7 +1146,7 @@ export default function App() {
               ? {
                   ...m,
                   isStreaming: false,
-                  error: err.message || 'একটি ত্রুটি ঘটেছে। দয়া করে সেটিংস থেকে GEMINI_API_KEY চেক করুন।',
+                  error: errorMessage,
                 }
               : m
           ),
@@ -1016,16 +1172,6 @@ export default function App() {
       mode,
     };
 
-    const assistantMsgId = 'msg-' + (Date.now() + 1);
-    const initialAssistantMessage: ChatMessage = {
-      id: assistantMsgId,
-      role: 'assistant',
-      text: '',
-      timestamp: Date.now(),
-      isStreaming: true,
-      mode,
-    };
-
     // Check if this will be the first user-assistant turn
     const isFirstTurn = activeSession.messages.length === 0;
     const currentSessionId = activeSession.id;
@@ -1036,6 +1182,46 @@ export default function App() {
         ? textToSend.slice(0, 28) + '...'
         : textToSend
       : activeSession.title;
+
+    // OFFLINE HANDLING: If currently offline, save immediately to IndexedDB and queue for Firestore sync
+    if (!isOnline) {
+      const offlineMsgId = 'msg-' + (Date.now() + 1);
+      const offlineAssistantMessage: ChatMessage = {
+        id: offlineMsgId,
+        role: 'assistant',
+        text: `🌐 **অফলাইন মোড — বার্তাটি লোকাল IndexedDB তে সংরক্ষিত হয়েছে**\n\nবর্তমানে আপনার ডিভাইস ইন্টারনেট সংযোগ বিচ্ছিন্ন (Offline) অবস্থায় রয়েছে।\n\n✅ আপনার বার্তাটি সফলভাবে লোকাল **IndexedDB** ডাটাবেজে সংরক্ষিত হয়েছে। চ্যাট হিস্ট্রি নির্বিঘ্নে ব্রাউজ করতে পারবেন।\n\n🔄 ইন্টারনেট সংযোগ ফিরে আসা মাত্রই এটি স্বয়ংক্রিয়ভাবে Google ক্লাউড ফায়ারস্টোরে সিঙ্ক (Sync) হয়ে যাবে এবং Gemini এআই রেসপন্স তৈরি হবে।`,
+        timestamp: Date.now(),
+        isStreaming: false,
+        mode,
+      };
+
+      const updatedMessagesWithOffline = [...activeSession.messages, userMessage, offlineAssistantMessage];
+      const updatedSession: ChatSession = {
+        ...activeSession,
+        title: newTitle,
+        messages: updatedMessagesWithOffline,
+        updatedAt: Date.now(),
+      };
+
+      updateActiveSession(() => updatedSession);
+
+      // Persist directly to IndexedDB & enqueue to pending sync
+      await saveSessionToIndexedDB(updatedSession);
+      await enqueuePendingSync(updatedSession);
+      const pending = await getPendingSyncQueue();
+      setPendingSyncCount(pending.length);
+      return;
+    }
+
+    const assistantMsgId = 'msg-' + (Date.now() + 1);
+    const initialAssistantMessage: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      text: '',
+      timestamp: Date.now(),
+      isStreaming: true,
+      mode,
+    };
 
     // Append user & assistant messages
     const updatedMessages = [...activeSession.messages, userMessage];
@@ -1183,6 +1369,51 @@ export default function App() {
           isPinned={Boolean(activeSession?.isPinned)}
           onTogglePin={() => handleTogglePinSession(activeSession.id)}
         />
+
+        {/* Offline Status & IndexedDB Notification Banner */}
+        {!isOnline && (
+          <div className="bg-amber-500/15 dark:bg-amber-500/20 border-b border-amber-300 dark:border-amber-700/60 px-4 py-2.5 text-xs text-amber-950 dark:text-amber-100 flex flex-wrap items-center justify-between gap-2 shadow-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              <span className="font-bold flex items-center gap-1.5 shrink-0">
+                <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                অফলাইন মোড সক্রিয়:
+              </span>
+              <span className="truncate">
+                চ্যাট হিস্ট্রি সম্পূর্ণ লোকাল IndexedDB থেকে লোড করা হয়েছে। নতুন বার্তা পাঠালে তা লোকাল IndexedDB-তে সুরক্ষিত থাকবে।
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-200/90 dark:bg-amber-900/80 text-amber-950 dark:text-amber-100 flex items-center gap-1 border border-amber-300 dark:border-amber-700">
+                <Database className="w-3 h-3 text-amber-700 dark:text-amber-300" />
+                {pendingSyncCount > 0 ? `${pendingSyncCount}টি মেসেজ সিঙ্কের অপেক্ষায়` : 'IndexedDB সংযুক্ত'}
+              </span>
+              <button
+                onClick={() => setHostingModalOpen(true)}
+                className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] transition shadow-2xs cursor-pointer"
+                title="সিঙ্ক স্ট্যাটাস প্যানেল ও সেটিংস খুলুন"
+              >
+                সিঙ্ক প্যানেল 📊
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Sync Toast Notification Banner */}
+        {syncToastMessage && (
+          <div className="bg-emerald-600 text-white px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-sm animate-in fade-in slide-in-from-top-1">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span>{syncToastMessage}</span>
+            </div>
+            <button
+              onClick={() => setSyncToastMessage(null)}
+              className="p-1 hover:bg-emerald-700 rounded text-emerald-100 hover:text-white cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Scrollable messages container */}
         <div 
@@ -1872,6 +2103,9 @@ export default function App() {
       <AndroidApkReleaseModal
         isOpen={androidApkModalOpen}
         onClose={() => setAndroidApkModalOpen(false)}
+        apkUrl="/Rubel-AI-Assistant.apk"
+        apkFileName="Rubel-AI-Assistant-v1.0.0.apk"
+        isBuildSuccessful={true}
       />
 
       {/* Gemini API Key Configuration Modal */}
@@ -2006,8 +2240,12 @@ export default function App() {
         </div>
       )}
 
-      {/* PWA Offline Indicator */}
-      <OfflineIndicator />
+      {/* PWA Offline & IndexedDB Sync Indicator */}
+      <OfflineIndicator
+        pendingCount={pendingSyncCount}
+        onSyncNow={handleSyncPendingNow}
+        onOpenSettings={() => setHostingModalOpen(true)}
+      />
     </div>
     </MiniBrowserProvider>
   </MusicPlayerProvider>

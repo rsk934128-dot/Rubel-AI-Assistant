@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useMiniBrowser } from '../context/MiniBrowserContext';
+import { SyncStatusPanel } from './SyncStatusPanel';
 
 export interface GeminiAuthModalProps {
   isOpen: boolean;
@@ -419,6 +420,28 @@ export const GeminiAuthModal: React.FC<GeminiAuthModalProps> = ({
                     </span>
                   </button>
 
+                  {/* Android APK Notice */}
+                  {typeof window !== 'undefined' && (window.location.hostname === 'localhost' || Boolean((window as any).Capacitor?.isNativePlatform?.())) && (
+                    <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-xs space-y-1.5 text-emerald-900 dark:text-emerald-200">
+                      <div className="font-bold flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        অ্যান্ড্রয়েড অ্যাপ (APK) লোকাল মোড সক্রিয়
+                      </div>
+                      <p className="text-[11px] leading-relaxed opacity-90">
+                        অ্যাপের সমস্ত মূল ফিচার (Gemini 3.8 AI চ্যাট, ট্রেডিং স্ক্রিন ভিশন বট, ইউটিউব স্টুডিও ও জনসেবা) কোনো লগইন ছাড়াই ১০০% সক্রিয় রয়েছে এবং চ্যাট হিস্ট্রি আপনার ডিভাইসে লোকাল স্টোরেজে সুরক্ষিত থাকে।
+                      </p>
+                      <a
+                        href="https://ais-pre-sdbgwm6do3t5hwhyzxx7x7-500845900368.asia-southeast1.run.app"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline pt-0.5"
+                      >
+                        ওয়েব ব্রাউজার থেকে ক্লাউড ব্যাকআপ সিঙ্ক খুলুন
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  )}
+
                   {/* Feature Checklist */}
                   <div className="p-3.5 rounded-xl bg-stone-50 dark:bg-stone-850/80 border border-stone-200 dark:border-stone-800 space-y-2 text-xs">
                     <p className="font-bold text-stone-900 dark:text-stone-100 flex items-center gap-1.5 text-xs">
@@ -531,6 +554,9 @@ export const GeminiAuthModal: React.FC<GeminiAuthModalProps> = ({
 
           {activeTab === 'cloud-status' && (
             <div className="space-y-3">
+              {/* Live Sync Status Panel */}
+              <SyncStatusPanel />
+
               <div className="p-3.5 rounded-xl bg-stone-50 dark:bg-stone-850 border border-stone-200 dark:border-stone-800 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-stone-700 dark:text-stone-300">ডাটাবেস সার্ভিস:</span>

@@ -201,10 +201,13 @@ export function formatAuthErrorMessage(error: any): string {
     return 'ইন্টারনেট বা নেটওয়ার্ক সংযোগ ব্যর্থ হয়েছে। আপনার ইন্টারনেট সংযোগ পরীক্ষা করে পুনরায় চেষ্টা করুন।';
   }
   if (code === 'auth/unauthorized-domain') {
-    return 'এই ডোমেইনটি Firebase অনুমোদিত তালিকায় নেই।';
+    return 'এই ডোমেইনটি Firebase অনুমোদিত তালিকায় নেই।';
+  }
+  if (message.includes('handler') || message.includes('redirecturl') || message.includes('localhost')) {
+    return 'অ্যান্ড্রয়েড অ্যাপে (APK) ব্রাউজার রিডাইরেক্ট সম্পন্ন হতে পারছে না। অ্যাপের সমস্ত ফিচার (AI চ্যাট, ট্রেডিং বট, মিডিয়া) কোনো লগইন ছাড়াই স্বাভাবিকভাবে কার্যকর। ক্লাউড ব্যাকআপ ব্যবহার করতে ব্রাউজার থেকে লাইভ ওয়েব সংস্করণ ওপেন করুন।';
   }
   if (message.includes('state') || message.includes('missing')) {
-    return 'OAuth সংযোগ ব্যর্থ (Missing state parameter)। ব্রাউজারের থার্ড-পার্টি কুকিজ বা ট্র্যাকিং শিল্ড (যেমন Brave Shields, AdBlock) সাময়িকভাবে নিষ্ক্রিয় করে পুনরায় চেষ্টা করুন।';
+    return 'OAuth সংযোগ ব্যর্থ (Missing state parameter)। ব্রাউজারের থার্ড-পার্টি কুকিজ বা ট্র্যাকিং শিল্ড সাময়িকভাবে নিষ্ক্রিয় করে পুনরায় চেষ্টা করুন।';
   }
   return error?.message || 'গুগল সংযোগ স্থাপন করা যায়নি। অনুগ্রহ করে পুনরায় চেষ্টা করুন।';
 }

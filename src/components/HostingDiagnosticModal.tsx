@@ -18,8 +18,10 @@ import {
   Layers,
   ShieldCheck,
   Radio,
-  ArrowLeft
+  ArrowLeft,
+  RefreshCw,
 } from 'lucide-react';
+import { SyncStatusPanel } from './SyncStatusPanel';
 
 interface HealthData {
   status: string;
@@ -47,7 +49,7 @@ export const HostingDiagnosticModal: React.FC<HostingDiagnosticModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [activeTab, setActiveTab] = useState<'status' | 'cloudrun' | 'render' | 'static' | 'apikey'>('status');
+  const [activeTab, setActiveTab] = useState<'status' | 'sync' | 'cloudrun' | 'render' | 'static' | 'apikey'>('status');
   const [health, setHealth] = useState<HealthData | null>(null);
   const [loadingHealth, setLoadingHealth] = useState(false);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -342,6 +344,17 @@ export const HostingDiagnosticModal: React.FC<HostingDiagnosticModalProps> = ({
             লাইভ স্ট্যাটাস ও টেস্ট
           </button>
           <button
+            onClick={() => setActiveTab('sync')}
+            className={`py-3 px-3 text-xs sm:text-sm font-semibold flex items-center gap-1.5 border-b-2 whitespace-nowrap transition-colors ${
+              activeTab === 'sync'
+                ? 'border-emerald-600 text-emerald-700 dark:border-emerald-400 dark:text-emerald-300'
+                : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+            }`}
+          >
+            <RefreshCw className="w-4 h-4" />
+            সিঙ্ক স্ট্যাটাস ও DB
+          </button>
+          <button
             onClick={() => setActiveTab('cloudrun')}
             className={`py-3 px-3 text-xs sm:text-sm font-semibold flex items-center gap-1.5 border-b-2 whitespace-nowrap transition-colors ${
               activeTab === 'cloudrun'
@@ -389,8 +402,15 @@ export const HostingDiagnosticModal: React.FC<HostingDiagnosticModalProps> = ({
 
         {/* Tab Contents */}
         <div className="p-5 overflow-y-auto space-y-5">
+          {activeTab === 'sync' && (
+            <SyncStatusPanel isCompact={false} />
+          )}
+
           {activeTab === 'status' && (
             <div className="space-y-4">
+              {/* Compact Sync Status Panel in Status Tab */}
+              <SyncStatusPanel isCompact={true} />
+
               {/* Server Status Overview Card */}
               <div className="p-4 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-950/70 space-y-3">
                 <div className="flex items-center justify-between">
