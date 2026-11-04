@@ -11,5 +11,12 @@
     "allowMixedContent": true,
     "captureInput": true,
     "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "CapacitorSQLite": {
+      "iosDatabaseLocation": "Library/CapacitorDatabase",
+      "iosIsEncryption": false,
+      "androidIsEncryption": false
+    }
   }
 }

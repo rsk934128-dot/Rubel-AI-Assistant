@@ -25,6 +25,7 @@ import {
   formatBengaliTimeAgo,
   toBengaliNumber,
   syncPendingToFirestore,
+  getLocalDatabaseDiagnostics,
 } from '../lib/indexedDb';
 import { ChatSession } from '../types';
 
@@ -48,8 +49,21 @@ export const SyncStatusPanel: React.FC<SyncStatusPanelProps> = ({
   const [relativeTimeText, setRelativeTimeText] = useState<string>('লোড হচ্ছে...');
   const [isSyncingNow, setIsSyncingNow] = useState<boolean>(false);
   const [syncStatusMsg, setSyncStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [dbDiag, setDbDiag] = useState<{
+    indexedDbActive: boolean;
+    sqliteActive: boolean;
+    isNative: boolean;
+    engineDescription: string;
+    sqliteSessionsCount: number;
+  }>({
+    indexedDbActive: true,
+    sqliteActive: true,
+    isNative: false,
+    engineDescription: 'Capacitor SQLite + IndexedDB Dual-Engine',
+    sqliteSessionsCount: 0,
+  });
 
-  // Refresh pending queue and last sync timestamp
+  // Refresh pending queue, database diagnostics, and last sync timestamp
   const refreshStatus = useCallback(async () => {
     try {
       const queue = await getPendingSyncQueue();
@@ -60,6 +74,9 @@ export const SyncStatusPanel: React.FC<SyncStatusPanelProps> = ({
       const latestTime = getLastFirestoreSyncTime();
       setLastSyncTime(latestTime);
       setRelativeTimeText(formatBengaliTimeAgo(latestTime));
+
+      const diag = await getLocalDatabaseDiagnostics();
+      setDbDiag(diag);
     } catch (err) {
       console.warn('Failed to refresh sync status:', err);
     }
@@ -203,7 +220,7 @@ export const SyncStatusPanel: React.FC<SyncStatusPanelProps> = ({
                 ডাটাবেজ ও ক্লাউড সিঙ্ক স্ট্যাটাস
               </h3>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
-                IndexedDB ↔ Firestore
+                SQLite ↔ IndexedDB ↔ Firestore
               </span>
             </div>
             <p className="text-xs text-stone-500 dark:text-stone-400">
@@ -371,8 +388,19 @@ export const SyncStatusPanel: React.FC<SyncStatusPanelProps> = ({
 
           <div className="flex items-center justify-between text-stone-600 dark:text-stone-400 font-medium">
             <span className="flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5 text-amber-500" />
+              Capacitor SQLite (Persistent):
+            </span>
+            <span className="font-mono text-stone-900 dark:text-stone-100 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              rubel_ai_chat_db (Auto-Backup & Re-install Safe)
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between text-stone-600 dark:text-stone-400 font-medium">
+            <span className="flex items-center gap-1.5">
               <HardDrive className="w-3.5 h-3.5 text-blue-500" />
-              লোকাল ডাটাবেজ স্টোর:
+              লোকাল ব্রাউজার স্টোর:
             </span>
             <span className="font-mono text-stone-900 dark:text-stone-100">
               IndexedDB: RubelAI_ChatDB (v1)

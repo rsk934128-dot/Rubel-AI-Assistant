@@ -5,6 +5,8 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
+import rateLimit from 'express-rate-limit';
+import { safeFetch, validateSafeUrl, escapeHtml } from './safeFetch.js';
 
 const getAppDirname = () => {
   try {
@@ -15,6 +17,8 @@ const getAppDirname = () => {
 };
 
 const app = express();
+// Enable trust proxy for Cloud Run and reverse proxy load balancers
+app.set('trust proxy', 1);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 export const FALLBACK_MODELS = [
@@ -26,32 +30,125 @@ export const FALLBACK_MODELS = [
   'gemini-flash-latest',
 ];
 
+export const ALLOWED_MODELS = new Set([
+  ...FALLBACK_MODELS,
+  'gemini-3.5-transcribe',
+]);
+
+// Clean process error handling
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception caught in server:', err);
+  console.error(`[${new Date().toISOString()}] Fatal Uncaught Exception:`, err.stack || err);
+  // Log and allow graceful shutdown if critical
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection caught in server at:', promise, 'reason:', reason);
+  console.error(`[${new Date().toISOString()}] Unhandled Promise Rejection at:`, promise, 'reason:', reason);
 });
 
-// Enable CORS for hosted environments and cross-origin clients
+// Trusted Origins for CORS
+function isAllowedOrigin(origin?: string): boolean {
+  if (!origin) return true; // Same-origin or non-browser request
+  try {
+    const url = new URL(origin);
+    const host = url.hostname.toLowerCase();
+
+    // Localhost development
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+
+    // AI Studio, Google Cloud Run, and Firebase hosting domains
+    if (
+      host.endsWith('.run.app') ||
+      host.endsWith('.web.app') ||
+      host.endsWith('.firebaseapp.com') ||
+      host.endsWith('.google.com')
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// Hardened CORS Middleware: Restrict credentials and wildcard reflection
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin) {
+  if (origin && isAllowedOrigin(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
   } else {
+    // For non-whitelisted third-party origins, do not allow credentials reflection
     res.header('Access-Control-Allow-Origin', '*');
   }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, Pragma');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-gemini-api-key, Cache-Control, Pragma');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
 
-app.use(express.json({ limit: '10mb' }));
+// JSON body parser with sensible size limit
+app.use(express.json({ limit: '2mb' }));
+
+// Helper to reliably extract client IP behind reverse proxies without throwing ValidationErrors
+const getClientIp = (req: express.Request): string => {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded) {
+    const firstIp = forwarded.split(',')[0].trim();
+    if (firstIp) return firstIp;
+  }
+  const fwdHeader = req.headers['forwarded'];
+  if (typeof fwdHeader === 'string' && fwdHeader) {
+    const match = fwdHeader.match(/for="?([^;",\s]+)/i);
+    if (match && match[1]) return match[1].trim();
+  }
+  return req.ip || req.socket.remoteAddress || '127.0.0.1';
+};
+
+// Rate Limiting: General API Limiter (300 requests per 15 minutes)
+export const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: {
+    xForwardedForHeader: false,
+    forwardedHeader: false,
+  },
+  keyGenerator: getClientIp,
+  message: { error: 'অতিরিক্ত রিকোয়েস্ট পাঠানো হয়েছে। অনুগ্রহ করে ১৫ মিনিট পর আবার চেষ্টা করুন।' },
+});
+
+// Stricter Rate Limiter for expensive AI operations (60 requests per minute)
+export const aiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: {
+    xForwardedForHeader: false,
+    forwardedHeader: false,
+  },
+  keyGenerator: getClientIp,
+  message: { error: 'এআই কোটা সীমা সুরক্ষিত রাখতে সাময়িক বিরতি দিন। ১ মিনিট পর পুনরায় চেষ্টা করুন।' },
+});
+
+// Proxy Rate Limiter (60 requests per minute)
+export const proxyLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: {
+    xForwardedForHeader: false,
+    forwardedHeader: false,
+  },
+  keyGenerator: getClientIp,
+  message: { error: 'প্রক্সি রিকোয়েস্টের সীমা অতিক্রম হয়েছে। অনুগ্রহ করে কিছুক্ষণ অপেক্ষা করুন।' },
+});
+
+app.use('/api/', apiLimiter);
 
 // Normalize incoming path for serverless/proxy hosts that may strip the /api prefix or rewrite to /api/index
 app.use((req, res, next) => {
@@ -108,8 +205,8 @@ app.all(['/api', '/api/'], (req, res) => {
 });
 
 
-// Track whether the default environment API key is revoked/leaked
-let isDefaultKeyRevoked = true;
+// Track whether the default environment API key is revoked/leaked (initially false)
+let isDefaultKeyRevoked = false;
 
 // Helper to extract available Gemini API key from multiple common hosting variable names or request headers
 function getEffectiveGeminiApiKey(req?: express.Request): string {
@@ -153,8 +250,8 @@ function getAIClient(req?: express.Request) {
   });
 }
 
-// Endpoint to validate and activate a user-provided API key
-app.post('/api/set-api-key', async (req, res) => {
+// Endpoint to validate a user-provided API key without polluting global server process.env
+app.post('/api/set-api-key', aiLimiter, async (req, res) => {
   try {
     const { apiKey } = req.body || {};
     if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length < 15) {
@@ -173,15 +270,13 @@ app.post('/api/set-api-key', async (req, res) => {
       contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
     });
 
-    // Validated successfully! Update running process environment
-    process.env.GEMINI_API_KEY = cleanKey;
-    process.env.VITE_GEMINI_API_KEY = cleanKey;
-    isDefaultKeyRevoked = false;
-
-    console.log('Gemini API key successfully verified and updated in server process memory.');
+    // Validated successfully! We do NOT mutate process.env globally to avoid affecting other tenants/users.
+    // The key is returned to be saved in client localStorage and passed via x-gemini-api-key header.
+    console.log('Gemini API key successfully validated for client session.');
     return res.json({
       success: true,
-      message: 'API Key সফলভাবে যাচাই ও কার্যকর করা হয়েছে!',
+      valid: true,
+      message: 'API Key সফলভাবে যাচাই করা হয়েছে! এটি আপনার ব্রাউজারে সুরক্ষিত রয়েছে।',
     });
   } catch (err: any) {
     console.error('API Key verification failed:', err);
@@ -458,7 +553,7 @@ app.all('/api/health/test', async (req, res) => {
 });
 
 // Audio Transcription API using Gemini Multimodal Audio
-app.post('/api/transcribe', async (req, res) => {
+app.post('/api/transcribe', aiLimiter, async (req, res) => {
   const startTime = Date.now();
   try {
     const { audioData, mimeType = 'audio/webm', language = 'bn-BD' } = req.body;
@@ -474,7 +569,7 @@ app.post('/api/transcribe', async (req, res) => {
     // Clean MIME type (remove parameters like codecs=opus)
     const cleanMimeType = (mimeType || 'audio/webm').split(';')[0].trim();
 
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     const isBengali = language && (language.startsWith('bn') || language === 'bn');
     const promptText = isBengali
       ? 'Transcribe this spoken audio accurately. If spoken in Bengali (বাংলা), transcribe verbatim in Bengali script. If spoken in English, transcribe verbatim in English. If mixed (Banglish/code terms), capture both accurately. Output ONLY the raw transcribed text. Do NOT add quotes, formatting, or commentary.'
@@ -605,8 +700,50 @@ function generateSmartFallbackReply(prompt: string, mode: string = 'general'): s
 যেকোনো প্রশ্ন, গণিত, কোডিং বা তথ্য জানতে আপনি সবসময় আমাকে বার্তা পাঠাতে পারেন!`;
 }
 
+// Shared clean system prompt with professional context (Zero personal PII)
+export const SHARED_DEFAULT_SYSTEM_PROMPT = `You are the official AI Assistant of "AI Assistant & Coding Studio" (বাংলা ও ইংরেজি স্মার্ট এআই সহকারী ও কোডিং স্টুডিও).
+
+YOUR IDENTITY & ORIGIN (আপনার পরিচয় ও সৃষ্টি):
+- আপনার নাম: "AI Assistant" (বাংলায়: এআই অ্যাসিস্ট্যান্ট বা এআই সহকারী)।
+- প্ল্যাটফর্ম ও অ্যাপ্লিকেশনের নাম: "AI Assistant & Coding Studio"।
+- নির্মাতা ও টিম পরিচিতি:
+  * এই অ্যাপ্লিকেশন ও স্টুডিও প্ল্যাটফর্মটি তৈরি ও পরিচালনা করেছে "AI Assistant & Coding Studio" টিম।
+  * আপনার বুদ্ধিমত্তা ও ভাষা মডেল চালিত হচ্ছে Google-এর সর্বাধুনিক "Gemini 3.8 Flash" (Google DeepMind) প্রযুক্তি দ্বারা।
+  * যখন ব্যবহারকারী বাংলায় জিজ্ঞেস করবে "আপনাদের কোম্পানির নাম কি?", "আপনাকে কে সৃষ্টি করেছে?", "আপনার পরিচয় কী?", "কে বানিয়েছে?", বা "Who created you? / What is your company name?":
+    - সশ্রদ্ধ, মার্জিত ও সুন্দর ভাষায় আত্মবিশ্বাসের সাথে উত্তর দিন।
+    - স্পষ্ট করে বলুন:
+      "আমি 'AI Assistant & Coding Studio'-এর নিজস্ব স্মার্ট কৃত্রিম বুদ্ধিমত্তা সহকারী।
+      আমাদের প্ল্যাটফর্ম ও সফটওয়্যার ইকোসিস্টেমের প্রতিষ্ঠাতা এবং প্রধান সফটওয়্যার আর্কিটেক্ট শেখ ফরিদ (সিরাজগঞ্জ, বাংলাদেশ)। তিনি একজন স্বশিক্ষিত সফটওয়্যার স্থপতি (Self-taught Software Architect) ও ফুল-স্ট্যাক ডেভেলপার। আমার পেছনে বুদ্ধিমত্তা ও ভাষা মডেল হিসেবে কাজ করছে Google-এর অত্যাধুনিক Gemini 3.8 Flash ইঞ্জিন।
+      বাংলা ও ইংরেজি—উভয় ভাষায় প্রোগ্রামিং/কোডিং, টেকনিক্যাল সমস্যা সমাধান, অফিশিয়াল দরখাস্ত ও চিঠি লেখা, এ টু জেড জনসেবা ও জরুরি তথ্য প্রদান, এবং দ্রুত গবেষণায় আপনাকে সহায়তা করাই আমার মূল দায়িত্ব।"
+- সফটওয়্যার আর্কিটেক্ট ও ওপেন সোর্স প্রজেক্ট ইকোসিস্টেম:
+  * প্রধান সফটওয়্যার আর্কিটেক্ট: শেখ ফরিদ (Sheikh Farid), সিরাজগঞ্জ, বাংলাদেশ।
+  * মূল প্রজেক্টসমূহ: ScrollVerse (গভটেক সফটওয়্যার ইকোসিস্টেম), Sheikh Code Exchange, RubelPay / RubelBank, Synergy BPO Hub, হোটেল আল শেখ ফরিদ ম্যানেজমেন্ট (অফলাইন-ফার্স্ট PWA), Ideation Spark, AutoPay, NoorNexus OS।
+  * অবস্থান: সিরাজগঞ্জ, বাংলাদেশ।
+- আপনার মূল লক্ষ্য ও বিশেষত্ব:
+  * সম্পূর্ণ বিজ্ঞাপনমুক্ত, দ্রুতগতির এবং নির্ভরযোগ্য সেবা দেওয়া।
+  * বাংলা ভাষায় সাবলীল, প্রাঞ্জল ও ব্যাকরণগতভাবে শুদ্ধ কথোপকথন।
+  * কোডিং ও সফটওয়্যার ডেভেলপমেন্টে এ-টু-জেড সহায়তা প্রদান।
+  * যেকোনো প্রযুক্তিগত, প্রাতিষ্ঠানিক ও শিক্ষণীয় প্রশ্নের নিখুঁত সমাধান।
+
+You are fluent in both Bengali (বাংলা) and English.
+You excel in:
+1. Coding & Software Development (Python, TypeScript, React, algorithms, code review, debugging, step-by-step reasoning).
+2. Writing & Communication (professional emails, articles, Bengali-English translation, creative writing).
+3. Citizen Services, Directories & Everyday Task Assistance (জনসেবা, হটলাইন, ঠিকানা ও দৈনন্দিন কাজ সহজ করা):
+   - Official emergency hotlines: 999 (National Emergency), 333 (Govt Information), 109 (Women & Child Help), 106 (Anti-Corruption), 16122 (Land Services), 16263 (Health Line), 105 (NID helpline).
+   - Legitimate identity & document verification guidance (NID portal services.nidw.gov.bd, *16001# biometric SIM ownership check, online birth certificate everify.bdris.gov.bd, e-passport tracking, and scam protection).
+   - Drafting official applications: General Diary (থানায় জিডি - GD for lost phone/docs), leave letters, complaint petitions, and professional biodata.
+4. Web Research & Link Finding:
+   - Real working links, official documentation, tutorials, and YouTube search links without hallucinating fake video IDs.
+5. Learning & Conceptual Explanations (making complex topics easy to understand, interviews, system design).
+6. Fact-checking, citations, and daily engineering advice.
+7. Sheikh Farid's Official GitHub Profile & Projects (https://github.com/rsk934128-dot).
+
+When the user asks in Bengali, respond naturally, warmly, and accurately in standard Bengali (বাংলা), keeping technical terms in English/Latin script when clearer (e.g., API, Backend, React, Hook, State).
+When code is requested, provide clean, idiomatic, runnable code with clear comments. Format with markdown code blocks.`;
+
 // Streaming Chat API with Search Grounding
-app.post('/api/chat/stream', async (req, res) => {
+app.post('/api/chat/stream', aiLimiter, async (req, res) => {
   try {
     const {
       messages = [],
@@ -621,10 +758,12 @@ app.post('/api/chat/stream', async (req, res) => {
       return res.status(400).json({ error: 'Message content is required.' });
     }
 
+    // Enforce model allowlist to prevent arbitrary expensive models
+    const effectiveModel = ALLOWED_MODELS.has(model) ? model : 'gemini-3.8-flash';
+
     const ai = getAIClient(req);
 
     // Prepare contents
-    // Convert previous messages to Gemini format: role 'user' | 'model', parts: [{ text }]
     const formattedContents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
 
     if (Array.isArray(messages) && messages.length > 0) {
@@ -645,129 +784,17 @@ app.post('/api/chat/stream', async (req, res) => {
       });
     }
 
-    const defaultSystem = `You are the official AI Assistant of "AI Assistant & Coding Studio" (বাংলা ও ইংরেজি স্মার্ট এআই সহকারী ও কোডিং স্টুডিও).
-
-YOUR IDENTITY & ORIGIN (আপনার পরিচয় ও সৃষ্টি):
-- আপনার নাম: "AI Assistant" (বাংলায়: এআই অ্যাসিস্ট্যান্ট বা এআই সহকারী)।
-- প্ল্যাটফর্ম ও অ্যাপ্লিকেশনের নাম: "AI Assistant & Coding Studio"।
-- আপনাকে কে তৈরি বা সৃষ্টি করেছে / কার অবদান:
-  * এই অ্যাপ্লিকেশন ও স্টুডিও প্ল্যাটফর্মটি তৈরি ও পরিচালনা করেছে "AI Assistant & Coding Studio" টিম / ডেভেলপমেন্ট দল (আমাদের উদ্ভাবক ও সফটওয়্যার আর্কিটেক্ট টিম)।
-  * আপনার বুদ্ধিমত্তা ও ভাষা মডেল চালিত হচ্ছে Google-এর সর্বাধুনিক "Gemini 3.8 Flash" (Google DeepMind) প্রযুক্তি দ্বারা।
-  * যখন ব্যবহারকারী বাংলায় জিজ্ঞেস করবে "আপনাদের কোম্পানির নাম কি?", "আপনাকে কে সৃষ্টি করেছে?", "আপনার পরিচয় কী?", "কে বানিয়েছে?", বা "Who created you? / What is your company name?":
-    - সশ্রদ্ধ, মার্জিত ও সুন্দর ভাষায় আত্মবিশ্বাসের সাথে উত্তর দিন।
-    - স্পষ্ট করে বলুন:
-      "আমি 'AI Assistant & Coding Studio' (এআই অ্যাসিস্ট্যান্ট অ্যান্ড কোডিং স্টুডিও)-এর নিজস্ব স্মার্ট কৃত্রিম বুদ্ধিমত্তা (AI) সহকারী।
-      আমাদের প্ল্যাটফর্ম ও সফটওয়্যার ইকোসিস্টেমের প্রতিষ্ঠাতা এবং প্রধান সফটওয়্যার আর্কিটেক্ট শেখ ফরিদ (Sheikh Farid - সিরাজগঞ্জ, বাংলাদেশ)। তিনি একজন স্বশিক্ষিত সফটওয়্যার স্থপতি (Self-taught Software Architect) ও ফুল-স্ট্যাক ডেভেলপার, এবং একই সাথে সিরাজগঞ্জের ঐতিহ্যবাহী পারিবারিক হোটেল 'হোটেল আল শেখ ফরিদ' পরিচালনার সাথে যুক্ত। আমার পেছনে বুদ্ধিমত্তা ও ভাষা মডেল হিসেবে কাজ করছে Google-এর অত্যাধুনিক Gemini 3.8 Flash ইঞ্জিন।
-      বাংলা ও ইংরেজি—উভয় ভাষায় প্রোগ্রামিং/কোডিং, টেকনিক্যাল সমস্যা সমাধান, অফিশিয়াল দরখাস্ত ও চিঠি লেখা, এ টু জেড জনসেবা ও জরুরি তথ্য প্রদান, এবং দ্রুত গবেষণায় আপনাকে সহায়তা করাই আমার মূল দায়িত্ব।"
-- আপনার প্রতিষ্ঠাতা ও সুপার অ্যাডমিন পরিচয় (Founder & Super Admin Knowledge Context):
-  * প্রতিষ্ঠাতা ও মূল মালিক: শেখ ফরিদ (Sheikh Farid), জন্ম: ১৫ জুন, ১৯৯৪ (বয়স ৩২ বছর), অবস্থান: সিরাজগঞ্জ, বাংলাদেশ।
-  * পেশা ও পরিচয়: স্বশিক্ষিত সফটওয়্যার স্থপতি ও ফুল-স্ট্যাক ডেভেলপার; পারিবারিক হোটেল ব্যবসা 'হোটেল আল শেখ ফরিদ'-এর পরিচালক।
-  * ফ্ল্যাগশিপ প্রজেক্ট ও কোম্পানি: ScrollVerse (গভটেক সফটওয়্যার ইকোসিস্টেম), Sheikh Code Exchange (৪২তম ফ্ল্যাগশিপ প্রজেক্ট), RubelPay / RubelBank, Synergy BPO Hub, হোটেল আল শেখ ফরিদ ও মিষ্টির দোকান ম্যানেজমেন্ট (Next.js + Dexie.js + Tailwind CSS offline-first PWA), NotorBotor, Ideation Spark, AutoPay.Ltd, NoorNexus Sovereign OS v3, NoorAI।
-  * পারিবারিক পরিচয়: পিতা মো. আব্দুল বারিক শেখ, মাতা আম্মা, স্ত্রী খুকুমণি বেগম (Khukumoni Begum), এক কন্যা ও এক পুত্র সন্তান।
-  * অ্যাডমিন আইডেন্টিটি: Role: "Super Admin & Founder", Owner: "Sheikh Farid", Entity: "Hotel Al Sheikh Farid", Location: "Sirajganj, Bangladesh"।
-- আপনার মূল লক্ষ্য ও বিশেষত্ব:
-  * সম্পূর্ণ বিজ্ঞাপনমুক্ত, দ্রুতগতির এবং নির্ভরযোগ্য সেবা দেওয়া।
-  * বাংলা ভাষায় সাবলীল, প্রাঞ্জল ও ব্যাকরণগতভাবে শুদ্ধ কথোপকথন।
-  * কোডিং ও সফটওয়্যার ডেভেলপমেন্টে এ-টু-জেড সহায়তা প্রদান।
-  * যেকোনো আইনি, প্রযুক্তিগত, প্রাতিষ্ঠানিক ও শিক্ষণীয় প্রশ্নের নিখুঁত সমাধান।
-
-You are fluent in both Bengali (বাংলা) and English.
-You excel in:
-1. Coding & Software Development (Python, TypeScript, React, algorithms, code review, debugging, step-by-step reasoning).
-2. Writing & Communication (professional emails, articles, Bengali-English translation, creative writing).
-3. Citizen Services, Directories & Everyday Task Assistance (জনসেবা, মোবাইল নাম্বার, ঠিকানা, পরিচয় নির্দেশিকা ও দৈনন্দিন কাজ সহজ করা):
-   - Finding official hotlines, police station contacts, emergency fire service, hospital & ambulance numbers, blood banks, and telecom customer care (999, 333, 109, 106, 16122, 16263, 16430, 105, etc.).
-   - Finding addresses, post offices, postcodes (পোস্ট কোড), government ministry offices, embassies, and location guidance.
-   - Legitimate identity & document verification guidance (NID portal services.nidw.gov.bd, *16001# biometric SIM ownership check, online birth certificate everify.bdris.gov.bd, e-passport tracking, and scam/fraud call protection).
-   - Drafting official Bengali applications: General Diary (থানায় জিডি - GD for lost phone/docs), leave letters (ছুটির দরখাস্ত), complaint petitions, citizen certificates, and CV/biodata formats.
-   - Solving everyday life, administrative, and technical problems from A to Z with clear, step-by-step guidance.
-4. Web Research & Link Finding (ইউটিউব ও ইন্টারনেট থেকে আসল এবং সঠিক লিঙ্ক):
-   - Finding active websites, tools, documentation, and official government resources.
-   - Finding songs, music, lyrics, playlists, and artists with REAL WORKING YouTube links:
-     * When the user requests a song, music, or video (e.g. asking for links like https://youtu.be/ID, https://www.youtube.com/watch?v=ID, or "ইউটিউব থেকে লিংক দিন"):
-       - ALWAYS use Google Search Grounding to find the official, verified YouTube video link with exact Video ID (e.g., https://youtu.be/VIDEO_ID or https://www.youtube.com/watch?v=VIDEO_ID).
-       - NEVER hallucinate, guess, or invent fake 11-character video IDs. Only provide verified links obtained from Google Search results.
-       - Format each song/video link nicely in Markdown: [গানের শিরোনাম - শিল্পী](https://www.youtube.com/watch?v=VIDEO_ID) or [গানের নাম](https://youtu.be/VIDEO_ID).
-       - Our application automatically converts verified YouTube links into an interactive in-app player card with direct playback, mini-browser streaming, and lyrics support!
-       - In addition to direct video links, ALWAYS include alternative search fallbacks:
-         * [YouTube এ সরাসরি খুঁজুন](https://www.youtube.com/results?search_query=গানের+নাম+শিল্পী)
-         * [YouTube Music এ গানটি শুনুন](https://music.youtube.com/search?q=গানের+নাম+শিল্পী)
-   - Finding YouTube videos, tutorials, educational channels, and playlists with accurate, working Markdown links.
-5. Learning & Conceptual Explanations (making complex topics easy to understand, interviews, system design).
-6. Analysis, Research & Google Search verification (providing factual, up-to-date information with citations).
-7. File generation, interactive tools, and daily engineering advice.
-8. All Apps Open & Universal Connect (সকল অ্যাপস ওপেন ও কানেক্ট করা):
-   - You can connect to, launch, and provide direct action links for all major services:
-     * Gmail: https://mail.google.com (Inbox, Compose, Search)
-     * GitHub (Sheikh Farid's Official Profile): https://github.com/rsk934128-dot (139+ public repositories)
-     * WhatsApp: https://web.whatsapp.com and direct chat links
-     * Google Drive: In-app Workspace & https://drive.google.com
-     * YouTube: In-app Media Studio & https://youtube.com
-     * Google Maps: In-app GPS & https://maps.google.com
-     * Facebook & Messenger: https://www.facebook.com/rubelrubel.rubel.98 (Sheikh Farid's Facebook)
-     * Telegram, LinkedIn, Twitter/X
-   - When a user says "ইউটিউব ওপেন করো", "গিটহাব ওপেন করো", "ড্রাইভ ওপেন করো", "জিমেইল ওপেন করো" — always provide direct, working Markdown action links with descriptive labels.
-
-9. Sending Instant Messages (মেসেজ পাঠানো - WhatsApp, SMS, Telegram):
-   - When the user asks to send a message (e.g. "মেসেজ পাঠাও", "হোয়াটসঅ্যাপে মেসেজ দাও", "কাউকে এসএমএস করো", "একটি শুভেচ্ছা বা নোটিশ বার্তা পাঠাও"):
-     * Write an appropriate, polite, well-structured message.
-     * Always provide 1-click interactive action links that pre-fill the message:
-       - WhatsApp: [WhatsApp এ সরাসরি মেসেজ পাঠান](https://api.whatsapp.com/send?phone=PHONE_NUMBER&text=ENCODED_MESSAGE) (if phone is unknown, omit phone parameter)
-       - Mobile SMS: [ফোনে সরাসরি SMS পাঠান](sms:PHONE_NUMBER?body=ENCODED_MESSAGE)
-       - Telegram: [Telegram এ মেসেজ পাঠান](https://t.me/share/url?url=&text=ENCODED_MESSAGE)
-     * Our chat interface automatically renders these into interactive Message Action Cards with copy and direct send buttons!
-
-10. Sending Gmail & Professional Emails (জিমেইল ও অফিশিয়াল ইমেইল পাঠানো):
-   - When the user asks to send an email or Gmail (e.g. "জিমেইল পাঠাও", "একটি ইমেইল লিখে পাঠিয়ে দাও", "কাউকে অফিশিয়াল দরখাস্ত বা কোলাবোরেশন মেইল করো"):
-     * Draft a complete professional email with:
-       - প্রাপকের ইমেইল (To)
-       - বিষয় (Subject)
-       - বিস্তারিত মার্জিত মূল বক্তব্য (Body)
-     * Always provide a 1-click direct Gmail Web Compose link:
-       [Gmail এ সরাসরি খুলুন ও পাঠান](https://mail.google.com/mail/?view=cm&fs=1&to=RECIPIENT_EMAIL&su=ENCODED_SUBJECT&body=ENCODED_BODY)
-     * Also provide a standard mailto link:
-       [ডিফল্ট ইমেইল অ্যাপে পাঠান](mailto:RECIPIENT_EMAIL?subject=ENCODED_SUBJECT&body=ENCODED_BODY)
-      * Our chat interface automatically converts this into a special Gmail Send Card with 1-click compose and copy buttons!
-
-11. Connecting with People & Networking (মানুষের সাথে কানেক্ট করা):
-   - When asked to connect with people, provide direct phone call links (tel:PHONE), WhatsApp links (https://api.whatsapp.com/send?phone=PHONE), email links (mailto:EMAIL), and Telegram links.
-   - For connecting with founder Sheikh Farid: Email: sheikhfaridvisa164@gmail.com, GitHub: https://github.com/rsk934128-dot, Location: Sirajganj, Bangladesh.
-   - For emergency or public services: 999 (National Emergency), 333 (Govt Information), 109 (Women & Child Help), 106 (Anti-Corruption), 16122 (Land Services).
-   - Offer networking introductions, collaboration proposals, and contact book management.
-
-12. Doing Real Work & Full-Stack Problem Solving (কাজ করা):
-   - You execute tasks with complete, production-ready, bug-free runnable code (TypeScript, React, Python, Node.js, Shell, SQL).
-   - You produce full systems, self-healing code, clear technical steps, and actionable business drafts.
-
-13. Sheikh Farid's Official GitHub Profile & Projects (https://github.com/rsk934128-dot):
-   - The user/founder's official GitHub profile is: https://github.com/rsk934128-dot (Username: rsk934128-dot, Profile Name: SHEIKH FARID).
-   - Organization/Company: RubelPay | Location: Sirajganj Sadar, Bangladesh.
-   - Public Repositories (139+ repos):
-     * DeepMind-Science-Discovery-Workbench: https://github.com/rsk934128-dot/DeepMind-Science-Discovery-Workbench (AI science discovery workbench)
-     * Sheikh-Farid-AI-Studio-: https://github.com/rsk934128-dot/Sheikh-Farid-AI-Studio- (Full-stack AI assistant & coding studio)
-     * Sheikh-Farid-AI-Studio-Project-Hub: https://github.com/rsk934128-dot/Sheikh-Farid-AI-Studio-Project-Hub (Ecosystem hub)
-     * Stripe-Gmail-Payment-Gateway-Hub: https://github.com/rsk934128-dot/Stripe-Gmail-Payment-Gateway-Hub (Stripe & Gmail payment gateway)
-     * AI-Assistant-Coding-Studio: https://github.com/rsk934128-dot/AI-Assistant-Coding-Studio (Flagship studio repository)
-     * PayHub-Gateway-Gmail-Disbursement-PWA: https://github.com/rsk934128-dot/PayHub-Gateway-Gmail-Disbursement-PWA (Disbursement PWA)
-     * No-IP-DNS-Remote-Access: https://github.com/rsk934128-dot/No-IP-DNS-Remote-Access (Dynamic DNS & remote server access)
-   - When asked about GitHub, provide direct clone commands (e.g. \`git clone https://github.com/rsk934128-dot/REPO_NAME.git\`), guide on Git push/pull, pull requests, and offer to help code, refactor, and upgrade any of Sheikh Farid's repositories!
-
-When the user asks in Bengali, respond naturally, warmly, and accurately in standard Bengali (বাংলা), keeping technical terms in English/Latin script when clearer (e.g., API, Backend, React, Hook, State).
-When the user asks about emergency numbers, addresses, identity verification, or official letters, provide complete, accurate, structured information with direct action steps and standard Bengali templates.
-When code is requested, provide clean, idiomatic, runnable code with clear comments. Format with markdown code blocks.`;
-
     let modeInstruction = '';
     if (mode === 'citizen') {
-      modeInstruction = `\nMode: Citizen & Everyday Life Assistant (জনসেবা, মোবাইল নাম্বার, ঠিকানা ও পরিচয় নির্দেশিকা):
+      modeInstruction = `\nMode: Citizen & Everyday Life Assistant (জনসেবা, হটলাইন, ঠিকানা ও নির্দেশিকা):
 - Focus on finding official phone numbers, addresses, postcodes, and step-by-step citizen services across Bangladesh and abroad.
-- When asked to find numbers or addresses, provide verified official directories, hotlines (999, 333, 109, 16122, 16263, etc.), and step-by-step guides.
-- If asked about verifying a person's identity, provide legal, official verification channels (NID wing portal, *16001# biometric SIM check, BDRIS, e-Passport) and advise on privacy and fraud prevention.
-- If asked for an application or GD, generate complete, formal Bengali petition drafts ready for police stations or offices.`;
+- When asked to find numbers or addresses, provide verified official directories and hotlines (999, 333, 109, 16122, 16263, etc.).
+- If asked for an application or GD, generate complete, formal petition drafts.`;
     }
 
     const effectiveSystemInstruction = systemInstruction
-      ? `${defaultSystem}${modeInstruction}\n\nSpecific task mode instructions:\n${systemInstruction}`
-      : `${defaultSystem}${modeInstruction}`;
+      ? `${SHARED_DEFAULT_SYSTEM_PROMPT}${modeInstruction}\n\nSpecific task mode instructions:\n${systemInstruction}`
+      : `${SHARED_DEFAULT_SYSTEM_PROMPT}${modeInstruction}`;
 
     // Setup headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -782,7 +809,7 @@ When code is requested, provide clean, idiomatic, runnable code with clear comme
       formattedContents,
       effectiveSystemInstruction,
       enableSearch,
-      model || 'gemini-3.8-flash'
+      effectiveModel
     );
 
     let accumulatedGrounding: any[] = [];
@@ -866,7 +893,7 @@ When code is requested, provide clean, idiomatic, runnable code with clear comme
 });
 
 // Non-streaming chat endpoint (fallback/quick queries)
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', aiLimiter, async (req, res) => {
   try {
     const {
       messages = [],
@@ -876,6 +903,9 @@ app.post('/api/chat', async (req, res) => {
       mode = 'general',
       model = 'gemini-3.8-flash',
     } = req.body;
+
+    // Enforce model allowlist
+    const effectiveModel = ALLOWED_MODELS.has(model) ? model : 'gemini-3.8-flash';
 
     const ai = getAIClient(req);
 
@@ -897,24 +927,15 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    const defaultSystem = `You are the official AI Assistant of "AI Assistant & Coding Studio" (বাংলা ও ইংরেজি স্মার্ট এআই সহকারী ও কোডিং স্টুডিও).
-Your Identity & Creators:
-- Name: "AI Assistant" (এআই অ্যাসিস্ট্যান্ট বা এআই সহকারী).
-- Platform / Company: "AI Assistant & Coding Studio".
-- Creators: Developed & crafted by the "AI Assistant & Coding Studio" software engineering team. Powered by Google's cutting-edge "Gemini 3.8 Flash" (Google DeepMind) model.
-- When asked "আপনাদের কোম্পানির নাম কি?", "আপনাকে কে সৃষ্টি করেছে?", "আপনার পরিচয় কী?":
-  Answer politely in Bengali:
-  "আমি 'AI Assistant & Coding Studio'-এর নিজস্ব এআই সহকারী। আমাদের সফটওয়্যার ডেভেলপমেন্ট টিম আমাকে তৈরি করেছে এবং আমার বুদ্ধিমত্তা Google-এর সর্বাধুনিক Gemini 3.8 Flash ইঞ্জিন দ্বারা পরিচালিত।"
-Provide thoughtful, well-structured answers with code examples, clear explanations, emergency hotlines, address assistance, and accurate facts.`;
-    const modeNote = mode === 'citizen' ? '\nMode: Citizen & Everyday Services Assistance (মোবাইল নম্বর, ঠিকানা, পরিচয় যাচাই ও দরখাস্ত).' : '';
-    const effectiveSystemInstruction = systemInstruction ? `${defaultSystem}${modeNote}\n\n${systemInstruction}` : `${defaultSystem}${modeNote}`;
+    const modeNote = mode === 'citizen' ? '\nMode: Citizen & Everyday Services Assistance (হটলাইন, ঠিকানা ও নাগরিক সেবা).' : '';
+    const effectiveSystemInstruction = systemInstruction ? `${SHARED_DEFAULT_SYSTEM_PROMPT}${modeNote}\n\n${systemInstruction}` : `${SHARED_DEFAULT_SYSTEM_PROMPT}${modeNote}`;
 
     const response = await fetchContentWithResilience(
       ai,
       formattedContents,
       effectiveSystemInstruction,
       enableSearch,
-      model || 'gemini-3.8-flash'
+      effectiveModel
     );
 
     const candidate = response.candidates?.[0];
@@ -1031,44 +1052,46 @@ Assistant response:
   }
 });
 
-// Live Web Proxy Endpoint to bypass X-Frame-Options and CSP frame-ancestors
-app.get('/api/proxy', async (req, res) => {
+// Live Web Proxy Endpoint to bypass X-Frame-Options with SSRF protection and XSS mitigation
+app.get('/api/proxy', proxyLimiter, async (req, res) => {
   const targetUrl = req.query.url as string;
   if (!targetUrl || typeof targetUrl !== 'string') {
     return res.status(400).send('URL query parameter is required');
   }
 
-  try {
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`);
-    } catch {
-      return res.status(400).send('Invalid URL format');
-    }
+  // Strict SSRF validation
+  const validation = await validateSafeUrl(targetUrl);
+  if (!validation.valid || !validation.url) {
+    return res.status(403).send(`Access Forbidden: ${validation.reason || 'Prohibited URL'}`);
+  }
 
-    const response = await fetch(parsedUrl.toString(), {
+  const parsedUrl = validation.url;
+
+  try {
+    const response = await safeFetch(parsedUrl.toString(), {
+      timeoutMs: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7',
       },
-      redirect: 'follow',
     });
 
     const contentType = response.headers.get('content-type') || 'text/html';
 
-    // Remove frame blocking security headers
+    // Remove frame blocking headers from upstream
     res.removeHeader('X-Frame-Options');
-    res.removeHeader('Content-Security-Policy');
     res.removeHeader('Content-Security-Policy-Report-Only');
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // Add safe defense-in-depth headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: https: blob:; frame-ancestors 'self'");
     res.setHeader('Content-Type', contentType);
 
     // If HTML, inject <base> tag and click interceptor
     if (contentType.includes('text/html')) {
       let html = await response.text();
-      const baseTag = `<base href="${parsedUrl.origin}${parsedUrl.pathname}">`;
+      const baseTag = `<base href="${escapeHtml(parsedUrl.origin + parsedUrl.pathname)}">`;
       const proxyScript = `
         <script>
           (function() {
@@ -1098,6 +1121,7 @@ app.get('/api/proxy', async (req, res) => {
     }
   } catch (err: any) {
     console.error('Web proxy error for URL:', targetUrl, err?.message);
+    const safeTargetUrl = escapeHtml(targetUrl);
     return res.status(502).send(`
       <!DOCTYPE html>
       <html>
@@ -1118,8 +1142,8 @@ app.get('/api/proxy', async (req, res) => {
           <div class="card">
             <h2>ওয়েব পেজটি সরাসরি লোড করা যায়নি</h2>
             <p>ওয়েবসাইটটি সরাসরি সংযোগ গ্রহণ করছে না বা ক্লাউড সার্ভার থেকে সরাসরি আইফ্রেমে লোড করা নিষিদ্ধ করেছে।</p>
-            <div class="url">${targetUrl}</div>
-            <a class="btn" href="${targetUrl}" target="_blank" rel="noopener noreferrer">নতুন ট্যাবে খুলুন (Open in New Tab) ↗</a>
+            <div class="url">${safeTargetUrl}</div>
+            <a class="btn" href="${safeTargetUrl}" target="_blank" rel="noopener noreferrer">নতুন ট্যাবে খুলুন (Open in New Tab) ↗</a>
           </div>
         </body>
       </html>
@@ -1127,16 +1151,23 @@ app.get('/api/proxy', async (req, res) => {
   }
 });
 
-// AI Web Reader Extractor: Extracts article text, clean markdown, and metadata
-app.get('/api/proxy/reader', async (req, res) => {
+// AI Web Reader Extractor: Extracts article text, clean markdown, and metadata with SSRF protection
+app.get('/api/proxy/reader', proxyLimiter, async (req, res) => {
   const targetUrl = req.query.url as string;
   if (!targetUrl) {
     return res.status(400).json({ error: 'URL parameter required' });
   }
 
+  const validation = await validateSafeUrl(targetUrl);
+  if (!validation.valid || !validation.url) {
+    return res.status(403).json({ error: `Access Forbidden: ${validation.reason || 'Prohibited URL'}` });
+  }
+
+  const parsedUrl = validation.url;
+
   try {
-    const parsedUrl = new URL(targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`);
-    const response = await fetch(parsedUrl.toString(), {
+    const response = await safeFetch(parsedUrl.toString(), {
+      timeoutMs: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1175,6 +1206,7 @@ app.get('/api/proxy/reader', async (req, res) => {
     return res.status(500).json({ error: err?.message || 'Failed to read web page' });
   }
 });
+
 
 // Helper to fetch live web search results from verified sources with filter awareness
 async function getFastLiveSearchResults(query: string, filter: 'all' | 'images' | 'news' | 'academic' = 'all') {
@@ -1289,9 +1321,8 @@ async function getFastLiveSearchResults(query: string, filter: 'all' | 'images' 
         authors: 'Peer-reviewed Researchers & Academics',
         journal: 'Google Scholar Academic Index',
         year: new Date().getFullYear(),
-        snippet: `বিশ্বব্যাপী স্বীকৃত বিশ্ববিদ্যালয় ও গবেষকদের "${safeQuery}" সংক্রান্ত পিয়ার-রিভিউড আর্টিকেল, থিসিস এবং সাইটেশন।`,
+        snippet: `বিশ্বব্যাপী স্বীকৃত বিশ্ববিদ্যালয় ও গবেষকদের "${safeQuery}" সংক্রান্ত পিয়ার-রিভিউড আর্টিকেল, থিসিস এবং সাইটেশন লিঙ্ক।`,
         pdfUrl: `https://scholar.google.com/scholar?q=${encodeURIComponent(safeQuery + ' filetype:pdf')}`,
-        citationsCount: 42,
       },
       {
         title: `${safeQuery} - arXiv ওপেন সায়েন্স প্রিপ্রিন্ট আর্কাইভ`,
@@ -1299,9 +1330,8 @@ async function getFastLiveSearchResults(query: string, filter: 'all' | 'images' 
         authors: 'arXiv Scientific Community',
         journal: 'Cornell University arXiv',
         year: new Date().getFullYear(),
-        snippet: `কম্পিউটার সায়েন্স, পদার্থবিজ্ঞান ও গণিতে "${safeQuery}" সম্পর্কিত সর্বাধুনিক গবেষণার উন্মুক্ত প্রিপ্রিন্ট।`,
+        snippet: `কম্পিউটার সায়েন্স, পদার্থবিজ্ঞান ও গণিতে "${safeQuery}" সম্পর্কিত সর্বাধুনিক গবেষণার উন্মুক্ত প্রিপ্রিন্ট আর্কাইভ।`,
         pdfUrl: `https://arxiv.org/search/?query=${encodeURIComponent(safeQuery)}&searchtype=all`,
-        citationsCount: 18,
       },
       {
         title: `${safeQuery} - ResearchGate ও PubMed বৈজ্ঞানিক প্রকাশনা`,
@@ -1414,7 +1444,7 @@ async function getFastLiveSearchResults(query: string, filter: 'all' | 'images' 
 }
 
 // In-App Mini Google Web Browser: Live Google Search API with Grounding & Search Filters
-app.post('/api/mini-browser/search', async (req, res) => {
+app.post('/api/mini-browser/search', aiLimiter, async (req, res) => {
   const { query, filter = 'all' } = req.body || {};
   if (!query || typeof query !== 'string' || !query.trim()) {
     return res.status(400).json({ error: 'Search query is required.' });
@@ -1425,7 +1455,7 @@ app.post('/api/mini-browser/search', async (req, res) => {
     ['all', 'images', 'news', 'academic'].includes(filter) ? filter : 'all';
 
   try {
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     let filterInstruction = '';
     if (validFilter === 'images') {
       filterInstruction = `The user selected the 'Images' search filter.
@@ -1466,8 +1496,7 @@ Provide an "academicResults" array with 4-8 scholarly papers:
     "journal": "Journal or Conference name e.g. Nature, IEEE, arXiv, ACM",
     "year": "Publication year e.g. 2024",
     "snippet": "Abstract summary, hypothesis, and scientific methodology",
-    "pdfUrl": "Direct PDF link if open-access, or repository link",
-    "citationsCount": 35
+    "pdfUrl": "Direct PDF link if open-access, or repository link"
   }
 ]`;
     } else {
@@ -1524,8 +1553,9 @@ CRITICAL: Output ONLY valid JSON, with no markdown code fences or backticks.`;
       'gemini-3.8-flash'
     );
 
+    // Realistic timeout for Gemini with Live Search Grounding (12s instead of 4.2s)
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('GEMINI_SEARCH_TIMEOUT')), 4200)
+      setTimeout(() => reject(new Error('GEMINI_SEARCH_TIMEOUT')), 12000)
     );
 
     const response: any = await Promise.race([geminiPromise, timeoutPromise]);
@@ -1578,14 +1608,14 @@ CRITICAL: Output ONLY valid JSON, with no markdown code fences or backticks.`;
 });
 
 // Mini Browser: Song Lyrics & Details Endpoint
-app.post('/api/mini-browser/lyrics', async (req, res) => {
+app.post('/api/mini-browser/lyrics', aiLimiter, async (req, res) => {
   try {
     const { songTitle, artist, videoId } = req.body;
     if (!songTitle && !videoId) {
       return res.status(400).json({ error: 'Song title or videoId required.' });
     }
 
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     const query = songTitle || (videoId ? `YouTube video ${videoId}` : 'Song');
     const systemPrompt = `You are a music encyclopedia. Provide complete verified lyrics, singer/artist background, composer, release year, and Bengali explanation of the song's meaning. Format neatly with headings.`;
 
@@ -1661,7 +1691,7 @@ async function searchYouTubeDirect(query: string): Promise<Array<{
 }
 
 // Dedicated Real YouTube Video Search & Grounding API
-app.post('/api/youtube/search', async (req, res) => {
+app.post('/api/youtube/search', aiLimiter, async (req, res) => {
   try {
     const { query } = req.body;
     if (!query || typeof query !== 'string' || !query.trim()) {
@@ -1682,7 +1712,7 @@ app.post('/api/youtube/search', async (req, res) => {
     }
 
     // 2. Secondary fallback: Gemini with Google Search Grounding & oEmbed verification
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     const systemPrompt = `You are a YouTube search engine. Find real YouTube video URLs for the query. Output valid JSON: {"query": "...", "videos": [{"videoId": "11-chars", "title": "...", "author": "..."}]}`;
 
     const response = await fetchContentWithResilience(
@@ -1819,10 +1849,10 @@ app.get('/api/youtube/time-feed', async (req, res) => {
 });
 
 // AI-Powered Music Ideas & Song Recommendation Generator
-app.post('/api/youtube/ai-ideas', async (req, res) => {
+app.post('/api/youtube/ai-ideas', aiLimiter, async (req, res) => {
   try {
     const { mood = 'মন ভালো করার মতো মিষ্টি গান', genre } = req.body || {};
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     const prompt = `You are an expert music curator and DJ specializing in Bengali music (বাংলা ব্যান্ড, কোক স্টুডিও, রবীন্দ্র সংগীত, ফোক, আধুনিক) and global melodies.
 User is asking for song recommendations and ideas based on this mood/preference: "${mood}" ${genre ? `(Genre: ${genre})` : ''}.
 
@@ -1908,14 +1938,14 @@ Respond ONLY with a valid JSON array in this format:
 });
 
 // Autonomous Freelance Agent: Evaluate Job & Generate Winning Proposal
-app.post('/api/agent/evaluate-job', async (req, res) => {
+app.post('/api/agent/evaluate-job', aiLimiter, async (req, res) => {
   try {
     const { job, profile } = req.body;
     if (!job || !job.description) {
       return res.status(400).json({ error: 'Job description is required.' });
     }
 
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     const prompt = `
 You are an autonomous freelance sales engineer and top-rated remote consultant on Upwork, RemoteOK, and LinkedIn.
 Analyze the following remote job posting and candidate profile:
@@ -1930,7 +1960,7 @@ ${job.description}
 
 CANDIDATE PROFILE & CAPABILITIES:
 Skills: ${(profile?.skills || ['React', 'TypeScript', 'Node.js', 'Python', 'FastAPI', 'Automation', 'AI Integration']).join(', ')}
-Bio: ${profile?.bio || 'Full stack engineer with 5+ years of experience in modern web apps, automation bots, and AI API integrations.'}
+Bio: ${profile?.bio || 'Full stack software developer specializing in modern web applications, APIs, and cloud architecture.'}
 Target Rate: ${profile?.hourlyRate || '$45 - $65/hr'}
 
 TASK:
@@ -1984,15 +2014,15 @@ Respond ONLY with valid JSON in this exact structure:
   }
 });
 
-// Autonomous Freelance Agent: Execute Task & Self-Healing Code Solver
-app.post('/api/agent/solve-task', async (req, res) => {
+// Autonomous Freelance Agent: Execute Task & Code Verification Solver
+app.post('/api/agent/solve-task', aiLimiter, async (req, res) => {
   try {
     const { jobTitle, requirement, techStack } = req.body;
     if (!requirement) {
       return res.status(400).json({ error: 'Requirement description is required.' });
     }
 
-    const ai = getAIClient();
+    const ai = getAIClient(req);
     const prompt = `
 You are an autonomous senior software engineer performing a freelance contract delivery.
 Client Requirement:
@@ -2004,9 +2034,9 @@ ${requirement}
 TASK:
 1. Decompose the requirement into architecture.
 2. Produce production-grade, bug-free, complete source code files (No placeholders, no "TODOs").
-3. Perform a simulated automated test & self-healing verification:
-   - Identify a potential edge-case or lint error that a self-correcting agent catches.
-   - Show how the agent corrected it before delivery.
+3. Perform an authentic static code analysis and structural integrity verification:
+   - Identify potential edge-case or exception hazards and show the architectural safeguards applied.
+   - Note: Do NOT claim simulated test-runner assertions executed unless genuine tests ran; provide a rigorous static review.
 4. Write a professional client delivery message ready to paste in Upwork/Fiverr chat.
 
 Respond ONLY with valid JSON in this exact structure:
@@ -2026,12 +2056,11 @@ Respond ONLY with valid JSON in this exact structure:
       "content": "/* Complete markdown documentation */"
     }
   ],
-  "selfHealingReport": {
-    "iterations": 2,
-    "initialErrorDetected": "Edge case: Missing null check or timeout handler on API fetch",
-    "correctionApplied": "Added retry loop with exponential backoff and strict TypeScript typing",
-    "testsPassed": true,
-    "assertionsCount": 12
+  "codeVerificationReport": {
+    "reviewStatus": "Static Code Review & Structural Integrity Verified",
+    "edgeCasesHandled": ["Strict input validation and error boundaries", "Exponential backoff retry with timeout handling"],
+    "typeSafetyAudit": "TypeScript strict compliance verified",
+    "architecturalNotes": "Code adheres to clean modular separation and zero-unhandled-rejection principles."
   },
   "deliveryNote": "Hi [Client Name], I have completed the requested module according to your exact specifications..."
 }
@@ -2056,13 +2085,13 @@ Respond ONLY with valid JSON in this exact structure:
   }
 });
 
-// AI-Powered Real-Time Screen & Candlestick Analysis for Trading Bot (Quotex, Pocket Option, Binance, TradingView, Forex)
-app.post('/api/trading-bot/analyze', async (req, res) => {
+// AI-Powered Real-Time Screen & Candlestick Analysis (Educational Technical Pattern Study)
+app.post('/api/trading-bot/analyze', aiLimiter, async (req, res) => {
   try {
     const {
       imageBase64,
-      platform = 'Quotex / Pocket Option',
-      market = 'EUR/USD (OTC)',
+      platform = 'TradingView / Chart Analysis',
+      market = 'EUR/USD',
       timeframe = '1m',
       strategy = 'Price Action & Candlestick Patterns',
     } = req.body || {};
@@ -2077,45 +2106,39 @@ app.post('/api/trading-bot/analyze', async (req, res) => {
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const mimeType = imageBase64.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
 
-    const ai = getAIClient();
+    const ai = getAIClient(req);
 
-    const prompt = `You are an elite quantitative technical analyst and algorithmic trading bot specialist for Binary Options (Quotex, Pocket Option, Olymp Trade), Crypto (Binance, Bybit), and Forex.
-The user is trading on "${platform}" with strategy "${strategy}", chart timeframe "${timeframe}", pair "${market}".
+    const prompt = `You are an educational technical chart analyst for financial markets, crypto, and currency pairs.
+The user is viewing chart timeframe "${timeframe}", pair "${market}" with focus "${strategy}".
 
-CRITICAL OBJECTIVE:
-Carefully inspect this live candlestick chart screen frame:
-1. Identify recent candles (green/bullish, red/bearish, wicks, body size, momentum).
-2. Detect candlestick formations: Hammer, Inverted Hammer, Bullish/Bearish Engulfing, Doji, Pinbar, Morning/Evening Star, Shooting Star, Marubozu, Double Bottom/Top, Breakout, Rejection from Support/Resistance.
-3. Detect indicators visible: RSI value/zones (<30 oversold, >70 overbought), Moving Averages crossover (EMA/SMA), MACD, Bollinger Bands, Stochastic.
-4. Detect immediate Key Support and Resistance price levels.
-5. Provide a definitive, clear trading decision:
-   - "BUY" (or "CALL" in binary options) if strong upward momentum / reversal from support is detected.
-   - "SELL" (or "PUT" in binary options) if strong downward momentum / rejection from resistance is detected.
-   - "HOLD" if market is consolidative, uncertain, or conflicting.
-6. Confidence Score: A realistic percentage between 60% and 98%.
-7. Recommended Expiry: "1 Minute", "2 Minutes", "5 Minutes", or "Next Candle".
-8. Risk Level: "LOW", "MEDIUM", or "HIGH".
-9. Bengali Explanation (reasonBn): Actionable, clear 2-3 sentences explaining exactly why this signal is given in Bengali (সহজ ও সাবলীল বাংলা).
-10. English Explanation (reasonEn): Crisp 1-2 sentence technical summary.
-11. Audio Alert (audioAlertBn): Short, crisp voice announcement in Bengali, e.g. "বাই সিগন্যাল পাওয়া গেছে! আস্থা ৯২%, ১ মিনিটের জন্য কল ট্রেড করুন।" or "সেল সিগন্যাল! মার্কেট রেজিস্ট্যান্স রিজেক্ট করেছে।"
+CRITICAL EDUCATIONAL & TECHNICAL OBJECTIVE:
+Inspect this chart screen frame purely for academic pattern study and technical price action analysis:
+1. Identify visible candlestick formations (e.g. Hammer, Inverted Hammer, Engulfing, Doji, Pinbar, Morning/Evening Star, Consolidation).
+2. Note visible indicators if present (RSI, Moving Averages, Support/Resistance zones).
+3. Provide educational technical pattern breakdown:
+   - "patternObserved": Name of detected formation
+   - "marketCondition": "BULLISH_BIAS", "BEARISH_BIAS", or "CONSOLIDATION_NEUTRAL"
+   - "keyLevels": { "support": "...", "resistance": "..." }
+   - "technicalContextBn": Detailed explanation in Bengali of what these patterns typically represent in technical analysis literature.
+   - "technicalContextEn": Crisp English technical summary.
+   - "audioExplanationBn": Educational audio summary in Bengali (e.g. "চার্ট বিশ্লেষণ সম্পন্ন। সাপোর্ট জোনে রিভার্সাল লক্ষণীয়। নিজে ঝুঁকি যাচাই করে সিদ্ধান্ত নিন।").
+   - "disclaimer": "সতর্কতা: এটি সম্পূর্ণ শিক্ষণীয় উদ্দেশ্যে প্রস্তুতকৃত চার্ট বিশ্লেষণ। কোনো ট্রেডিং সিগন্যাল বা আর্থিক পরামর্শ নয়।"
+
+DO NOT issue buy/sell execution commands, do NOT force false certainty percentages, and do NOT encourage live monetary gambling.
 
 Respond STRICTLY with a valid JSON object matching this schema:
 {
-  "action": "BUY" | "SELL" | "HOLD",
-  "confidence": 88,
-  "trend": "BULLISH" | "BEARISH" | "SIDEWAYS",
-  "pattern": "Bullish Engulfing at Key Support",
-  "indicators": ["RSI Oversold (26)", "Rejection wick at 1.0820 support", "Bullish volume surge"],
+  "marketCondition": "BULLISH_BIAS" | "BEARISH_BIAS" | "CONSOLIDATION_NEUTRAL",
+  "patternObserved": "Bullish Engulfing at Support Zone",
+  "indicators": ["RSI near oversold boundary", "Support wick rejection"],
   "supportLevel": "1.0820",
   "resistanceLevel": "1.0895",
-  "timeframeRecommended": "1 Minute (60s)",
-  "riskLevel": "LOW",
-  "reasonBn": "চার্টে সাপোর্ট লাইনে একটি নিখুঁত বুলিশ এনগালফিং প্যাটার্ন তৈরি হয়েছে এবং RSI ওভারসোল্ড জোন থেকে ওপরের দিকে মুভ করছে। ১ মিনিটের জন্য এটি একটি শক্তিশালী CALL/BUY সিগন্যাল।",
-  "reasonEn": "Clear bullish reversal candle at key support with RSI climbing out of oversold territory. Recommending BUY/CALL entry for 1 min expiry.",
-  "suggestedEntry": "বর্তমান ক্যান্ডেলের ক্লোজিং বা হালকা পুলব্যাকে",
-  "stopLoss": "1.0815",
-  "takeProfit": "1.0890",
-  "audioAlertBn": "বাই সিগন্যাল পাওয়া গেছে! আস্থা ৮৮%, ১ মিনিটের জন্য কল ট্রেড করুন।"
+  "timeframe": "${timeframe}",
+  "riskNote": "HIGH_VOLATILITY",
+  "technicalContextBn": "চার্টে সাপোর্ট লেভেলে বায়ারদের উপস্থিতি নির্দেশ করছে এমন রিভার্সাল ক্যান্ডেল তৈরি হয়েছে।",
+  "technicalContextEn": "Candle formation indicates buyer absorption at support line, showing typical technical reversal characteristics.",
+  "audioExplanationBn": "চার্ট বিশ্লেষণ সম্পন্ন। সাপোর্ট জোনে রিভার্সাল প্যাটার্ন দেখা যাচ্ছে। নিজস্ব ঝুঁকি পর্যালোচনা করুন।",
+  "disclaimer": "সতর্কতা: এটি শিক্ষণীয় প্রযুক্তিগত বিশ্লেষণ। কোনো আর্থিক পরামর্শ বা ট্রেড সিগন্যাল নয়।"
 }
 `;
 
@@ -2140,12 +2163,30 @@ Respond STRICTLY with a valid JSON object matching this schema:
     });
 
     const parsed = JSON.parse(response.text || '{}');
+    const legalDisclaimer = 'সতর্কতা: এটি সম্পূর্ণ শিক্ষণীয় উদ্দেশ্যে প্রস্তুতকৃত চার্ট বিশ্লেষণ। কোনো ট্রেডিং সিগন্যাল বা আর্থিক পরামর্শ নয়। বাংলাদেশ ব্যাংক ও আইনি বিধিমালা অনুসারে অননুমোদিত বৈদেশিক মুদ্রা/বাইনারি ট্রেডিং উচ্চ আর্থিক ঝুঁকিপূর্ণ ও নিষিদ্ধ।';
+
+    // Map fields for client compatibility while enforcing educational context
+    const normalizedAnalysis = {
+      action: parsed.marketCondition === 'BULLISH_BIAS' ? 'BUY' : parsed.marketCondition === 'BEARISH_BIAS' ? 'SELL' : 'HOLD',
+      trend: parsed.marketCondition === 'BULLISH_BIAS' ? 'BULLISH' : parsed.marketCondition === 'BEARISH_BIAS' ? 'BEARISH' : 'SIDEWAYS',
+      pattern: parsed.patternObserved || 'Technical Pattern Formation',
+      indicators: parsed.indicators || [],
+      supportLevel: parsed.supportLevel || 'N/A',
+      resistanceLevel: parsed.resistanceLevel || 'N/A',
+      reasonBn: parsed.technicalContextBn || 'প্রযুক্তিগত চার্ট পর্যালোচনা সম্পন্ন।',
+      reasonEn: parsed.technicalContextEn || 'Technical chart inspection completed.',
+      audioAlertBn: parsed.audioExplanationBn || 'চার্ট প্যাটার্ন বিশ্লেষণ সম্পন্ন হয়েছে।',
+      disclaimer: legalDisclaimer,
+      ...parsed,
+    };
+
     res.json({
       success: true,
       timestamp: Date.now(),
       platform,
       market,
-      analysis: parsed,
+      analysis: normalizedAnalysis,
+      disclaimer: legalDisclaimer,
     });
   } catch (err: any) {
     console.error('Error in /api/trading-bot/analyze:', err?.message || err);
@@ -2156,17 +2197,28 @@ Respond STRICTLY with a valid JSON object matching this schema:
   }
 });
 
-// Trading Bot Webhook Broadcaster (For automated trading execution & Telegram/Discord alerts)
-app.post('/api/trading-bot/webhook', async (req, res) => {
+// Trading Bot Webhook Broadcaster (SSRF Protected)
+app.post('/api/trading-bot/webhook', proxyLimiter, async (req, res) => {
   try {
     const { webhookUrl, payload } = req.body || {};
     if (!webhookUrl || typeof webhookUrl !== 'string') {
       return res.status(400).json({ error: 'webhookUrl is required.' });
     }
 
-    const resp = await fetch(webhookUrl, {
+    const { valid, reason, parsedUrl } = await validateSafeUrl(webhookUrl);
+    if (!valid || !parsedUrl) {
+      return res.status(400).json({
+        success: false,
+        error: reason || 'Blocked: Target webhook URL is invalid or points to restricted internal infrastructure.',
+      });
+    }
+
+    const resp = await safeFetch(webhookUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'AI-Studio-Webhook-Dispatcher/1.0',
+      },
       body: JSON.stringify(payload || {}),
     });
 
@@ -2271,8 +2323,8 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/DeepMind-Science-Discovery-Workbench',
         description: 'DeepMind Science Discovery Workbench — অত্যাধুনিক বৈজ্ঞানিক গবেষণা, প্রোটিন মডেলিং ও সিমুলেশন প্ল্যাটফর্ম।',
         language: 'TypeScript',
-        stargazers_count: 5,
-        forks_count: 1,
+        stargazers_count: 0,
+        forks_count: 0,
         updated_at: '2026-10-14T10:00:00Z',
       },
       {
@@ -2282,8 +2334,8 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/Sheikh-Farid-AI-Studio-',
         description: 'শেখ ফরিদ AI Studio — পূর্ণাঙ্গ ফুল-স্ট্যাক কৃত্রিম বুদ্ধিমত্তা সহকারী ও অটোমেটেড কোডিং স্টুডিও।',
         language: 'TypeScript',
-        stargazers_count: 8,
-        forks_count: 2,
+        stargazers_count: 0,
+        forks_count: 0,
         updated_at: '2026-10-14T08:30:00Z',
       },
       {
@@ -2293,8 +2345,8 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/Sheikh-Farid-AI-Studio-Project-Hub',
         description: 'শেখ ফরিদ AI Studio & Project Hub — মাল্টি-রিপোজিটরি ইকোসিস্টেম ও প্রজেক্ট কোঅর্ডিনেশন হাব।',
         language: 'TypeScript',
-        stargazers_count: 4,
-        forks_count: 1,
+        stargazers_count: 0,
+        forks_count: 0,
         updated_at: '2026-10-13T14:20:00Z',
       },
       {
@@ -2304,8 +2356,8 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/Stripe-Gmail-Payment-Gateway-Hub',
         description: 'Stripe & Gmail Payment Gateway Hub — সিকিউর পেমেন্ট গেটওয়ে এবং অটোমেটেড জিমেইল রিসিট ডিসবার্সমেন্ট সিস্টেম।',
         language: 'JavaScript',
-        stargazers_count: 6,
-        forks_count: 1,
+        stargazers_count: 0,
+        forks_count: 0,
         updated_at: '2026-10-12T12:00:00Z',
       },
       {
@@ -2315,8 +2367,8 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/AI-Assistant-Coding-Studio',
         description: 'AI-Assistant-Coding-Studio — ফ্ল্যাগশিপ রিয়েল-টাইম কোডিং সহকারী, লাইভ কম্পাইলার ও ক্লাউড সিঙ্ক।',
         language: 'TypeScript',
-        stargazers_count: 12,
-        forks_count: 3,
+        stargazers_count: 0,
+        forks_count: 0,
         updated_at: '2026-10-11T16:45:00Z',
       },
       {
@@ -2326,8 +2378,8 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/PayHub-Gateway-Gmail-Disbursement-PWA',
         description: 'PayHub Gateway & Gmail Disbursement PWA — অফলাইন-ফার্স্ট পেমেন্ট গেটওয়ে ও পে-রোল ম্যানেজমেন্ট।',
         language: 'TypeScript',
-        stargazers_count: 7,
-        forks_count: 2,
+        stargazers_count: 0,
+        forks_count: 0,
         updated_at: '2026-10-10T09:15:00Z',
       },
       {
@@ -2337,7 +2389,7 @@ app.get('/api/github/repos', async (req, res) => {
         html_url: 'https://github.com/rsk934128-dot/No-IP-DNS-Remote-Access',
         description: 'No-IP ডায়নামিক ডিএনএস ও রিমোট সার্ভার অ্যাক্সেস অটোমেশন টুলকিট।',
         language: 'Shell',
-        stargazers_count: 3,
+        stargazers_count: 0,
         forks_count: 0,
         updated_at: '2026-10-09T18:00:00Z',
       },
@@ -2433,7 +2485,7 @@ app.post('/api/ddns/update', async (req, res) => {
           '১. No-IP.com এ লগইন করুন (https://www.noip.com/login)।',
           '২. Account -> "DDNS Keys" মেনু থেকে একটি নতুন DDNS Key তৈরি করুন।',
           '৩. No-IP এখন মূল পাসওয়ার্ডের বদলে ডেডিকেটেড "DDNS Key" ইউজারনেম ও পাসওয়ার্ড ব্যবহার বাধ্যতামূলক করেছে।',
-          '৪. আপনার ইমেইল (sheikhfarid164@gmail.com বা sheikhfaridvisa164@gmail.com) সঠিক কিনা পরীক্ষা করুন।'
+          '৪. আপনার নিবন্ধিত No-IP একাউন্ট তথ্য ও ক্রেডেনশিয়াল সঠিক কিনা পরীক্ষা করুন।'
         ];
         break;
       case 'nohost':
@@ -2482,47 +2534,37 @@ app.post('/api/ddns/update', async (req, res) => {
   }
 });
 
-// Universal Share Target and Link Metadata Preview API
-app.get('/api/fetch-link-preview', async (req, res) => {
+// Universal Share Target and Link Metadata Preview API (SSRF Hardened)
+app.get('/api/fetch-link-preview', proxyLimiter, async (req, res) => {
   try {
     const rawUrl = req.query.url as string;
     if (!rawUrl || typeof rawUrl !== 'string') {
       return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(rawUrl);
-    } catch {
-      return res.status(400).json({ success: false, error: 'Invalid URL format' });
+    // SSRF Validation: Block localhost, 127.0.0.1, RFC1918, 169.254.x, CGNAT, IPv6, and DNS Rebinding
+    const { valid, reason, parsedUrl } = await validateSafeUrl(rawUrl);
+    if (!valid || !parsedUrl) {
+      return res.status(400).json({
+        success: false,
+        error: reason || 'Access to internal IP or restricted metadata service is forbidden',
+      });
     }
 
-    // Safety check: block localhost / private IP loops
-    const host = parsedUrl.hostname.toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.')) {
-      return res.status(400).json({ success: false, error: 'Access to local IP is forbidden' });
-    }
-
-    const abortCtrl = new AbortController();
-    const timeout = setTimeout(() => abortCtrl.abort(), 6000);
-
     try {
-      const response = await fetch(rawUrl, {
-        signal: abortCtrl.signal,
+      const response = await safeFetch(rawUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 AIStudioBot/1.0',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
       });
 
-      clearTimeout(timeout);
-
       if (!response.ok) {
         return res.json({
           success: true,
           domain: parsedUrl.hostname,
           title: parsedUrl.hostname,
-          description: `লিংক: ${rawUrl}`,
+          description: `লিংক: ${parsedUrl.hostname}`,
           url: rawUrl,
         });
       }
@@ -2548,12 +2590,11 @@ app.get('/api/fetch-link-preview', async (req, res) => {
         url: rawUrl,
       });
     } catch {
-      clearTimeout(timeout);
       return res.json({
         success: true,
         domain: parsedUrl.hostname,
         title: parsedUrl.hostname,
-        description: `লিংক: ${rawUrl}`,
+        description: `লিংক: ${parsedUrl.hostname}`,
         url: rawUrl,
       });
     }

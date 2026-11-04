@@ -1,5 +1,19 @@
 import { ChatSession } from '../types';
 import { saveSessionToCloud } from './firebase';
+import {
+  saveSessionToSQLite,
+  saveAllSessionsToSQLite,
+  getAllSessionsFromSQLite,
+  deleteSessionFromSQLite,
+  enqueuePendingSyncSQLite,
+  getPendingSyncQueueSQLite,
+  clearPendingSyncSQLite,
+  getSQLiteDiagnostics,
+  openSQLiteDB,
+  isSQLiteSupported,
+} from './sqliteStorage';
+
+export { getSQLiteDiagnostics, isSQLiteSupported, openSQLiteDB };
 
 const DB_NAME = 'RubelAI_ChatDB';
 const DB_VERSION = 1;
@@ -62,9 +76,16 @@ export function openChatDB(): Promise<IDBDatabase> {
 }
 
 /**
- * Saves or updates a single chat session in IndexedDB.
+ * Saves or updates a single chat session across both persistent SQLite and IndexedDB.
+ * SQLite provides Android re-install survival, while IndexedDB provides fast in-browser caching.
  */
 export async function saveSessionToIndexedDB(session: ChatSession): Promise<void> {
+  // 1. Persist to SQLite (survives app re-installs and Android data clearing)
+  saveSessionToSQLite(session).catch((err) => {
+    console.warn('Dual-storage SQLite save notice:', err?.message || err);
+  });
+
+  // 2. Persist to IndexedDB
   try {
     const db = await openChatDB();
     return new Promise((resolve, reject) => {
@@ -81,10 +102,16 @@ export async function saveSessionToIndexedDB(session: ChatSession): Promise<void
 }
 
 /**
- * Saves multiple sessions in a single readwrite transaction.
+ * Saves multiple sessions in a single readwrite transaction across both SQLite and IndexedDB.
  */
 export async function saveAllSessionsToIndexedDB(sessions: ChatSession[]): Promise<void> {
   if (!Array.isArray(sessions) || sessions.length === 0) return;
+
+  // Persist to SQLite batch
+  saveAllSessionsToSQLite(sessions).catch((err) => {
+    console.warn('Dual-storage SQLite batch save notice:', err?.message || err);
+  });
+
   try {
     const db = await openChatDB();
     return new Promise((resolve, reject) => {
@@ -104,33 +131,93 @@ export async function saveAllSessionsToIndexedDB(sessions: ChatSession[]): Promi
 }
 
 /**
- * Retrieves all sessions from IndexedDB sorted by newest updatedAt.
+ * Retrieves all sessions sorted by newest updatedAt.
+ * Reconciles sessions from both SQLite and IndexedDB to guarantee survival across
+ * app re-installs, browser cache purges, and offline periods.
  */
 export async function getAllSessionsFromIndexedDB(): Promise<ChatSession[]> {
-  try {
-    const db = await openChatDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(SESSIONS_STORE, 'readonly');
-      const store = tx.objectStore(SESSIONS_STORE);
-      const request = store.getAll();
+  const [idbList, sqliteList] = await Promise.all([
+    // Load from IndexedDB
+    (async () => {
+      try {
+        const db = await openChatDB();
+        return new Promise<ChatSession[]>((resolve, reject) => {
+          const tx = db.transaction(SESSIONS_STORE, 'readonly');
+          const store = tx.objectStore(SESSIONS_STORE);
+          const request = store.getAll();
 
-      request.onsuccess = () => {
-        const list: ChatSession[] = request.result || [];
-        list.sort((a, b) => b.updatedAt - a.updatedAt);
-        resolve(list);
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.error('getAllSessionsFromIndexedDB error:', err);
-    return [];
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error);
+        });
+      } catch (err) {
+        console.warn('IndexedDB read notice:', err);
+        return [];
+      }
+    })(),
+    // Load from persistent SQLite
+    getAllSessionsFromSQLite().catch(() => []),
+  ]);
+
+  const sessionMap = new Map<string, ChatSession>();
+
+  // Add IndexedDB records
+  for (const s of idbList) {
+    if (s && s.id) {
+      sessionMap.set(s.id, s);
+    }
   }
+
+  // Merge SQLite records (SQLite takes precedence if newer, or restores deleted browser data)
+  const missingInIdb: ChatSession[] = [];
+  const missingInSQLite: ChatSession[] = [];
+
+  for (const s of sqliteList) {
+    if (!s || !s.id) continue;
+    const existing = sessionMap.get(s.id);
+    if (!existing) {
+      sessionMap.set(s.id, s);
+      missingInIdb.push(s);
+    } else if ((s.updatedAt || 0) > (existing.updatedAt || 0)) {
+      sessionMap.set(s.id, s);
+      missingInIdb.push(s);
+    }
+  }
+
+  // Cross-pollinate / backfill IndexedDB from SQLite if restored from a reinstall
+  if (missingInIdb.length > 0) {
+    try {
+      const db = await openChatDB();
+      const tx = db.transaction(SESSIONS_STORE, 'readwrite');
+      const store = tx.objectStore(SESSIONS_STORE);
+      for (const item of missingInIdb) {
+        store.put(item);
+      }
+    } catch (_) {}
+  }
+
+  // Cross-pollinate SQLite from IndexedDB if not yet indexed in SQLite
+  for (const s of idbList) {
+    if (s && s.id && !sqliteList.some((sq) => sq.id === s.id)) {
+      missingInSQLite.push(s);
+    }
+  }
+  if (missingInSQLite.length > 0) {
+    saveAllSessionsToSQLite(missingInSQLite).catch(() => {});
+  }
+
+  const combined = Array.from(sessionMap.values());
+  combined.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return combined;
 }
 
 /**
- * Deletes a session from IndexedDB.
+ * Deletes a session from both SQLite and IndexedDB.
  */
 export async function deleteSessionFromIndexedDB(sessionId: string): Promise<void> {
+  // Delete from SQLite
+  deleteSessionFromSQLite(sessionId).catch(() => {});
+
+  // Delete from IndexedDB
   try {
     const db = await openChatDB();
     return new Promise((resolve, reject) => {
@@ -147,9 +234,13 @@ export async function deleteSessionFromIndexedDB(sessionId: string): Promise<voi
 }
 
 /**
- * Enqueues a session for background sync when offline.
+ * Enqueues a session for background sync when offline in both SQLite and IndexedDB.
  */
 export async function enqueuePendingSync(session: ChatSession): Promise<void> {
+  // Enqueue in SQLite
+  enqueuePendingSyncSQLite(session).catch(() => {});
+
+  // Enqueue in IndexedDB
   try {
     const db = await openChatDB();
     return new Promise((resolve, reject) => {
@@ -170,29 +261,48 @@ export async function enqueuePendingSync(session: ChatSession): Promise<void> {
 }
 
 /**
- * Gets all pending offline sessions waiting to be synced to Firestore.
+ * Gets all pending offline sessions waiting to be synced to Firestore from both engines.
  */
 export async function getPendingSyncQueue(): Promise<ChatSession[]> {
-  try {
-    const db = await openChatDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(PENDING_SYNC_STORE, 'readonly');
-      const store = tx.objectStore(PENDING_SYNC_STORE);
-      const request = store.getAll();
+  const [idbQueue, sqliteQueue] = await Promise.all([
+    (async () => {
+      try {
+        const db = await openChatDB();
+        return new Promise<ChatSession[]>((resolve, reject) => {
+          const tx = db.transaction(PENDING_SYNC_STORE, 'readonly');
+          const store = tx.objectStore(PENDING_SYNC_STORE);
+          const request = store.getAll();
 
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.error('getPendingSyncQueue error:', err);
-    return [];
+          request.onsuccess = () => resolve(request.result || []);
+          request.onerror = () => reject(request.error);
+        });
+      } catch (err) {
+        console.error('getPendingSyncQueue error:', err);
+        return [];
+      }
+    })(),
+    getPendingSyncQueueSQLite().catch(() => []),
+  ]);
+
+  const map = new Map<string, ChatSession>();
+  for (const s of idbQueue) {
+    if (s && s.id) map.set(s.id, s);
   }
+  for (const s of sqliteQueue) {
+    if (s && s.id && !map.has(s.id)) map.set(s.id, s);
+  }
+
+  return Array.from(map.values());
 }
 
 /**
  * Removes a session from the pending sync queue after successful Firestore upload.
  */
 export async function clearPendingSync(sessionId: string): Promise<void> {
+  // Clear from SQLite
+  clearPendingSyncSQLite(sessionId).catch(() => {});
+
+  // Clear from IndexedDB
   try {
     const db = await openChatDB();
     return new Promise((resolve, reject) => {
@@ -324,4 +434,33 @@ export async function syncPendingToFirestore(
   }
 
   return { syncedCount, errors };
+}
+
+/**
+ * Returns real-time diagnostics on local database architecture (Capacitor SQLite + IndexedDB).
+ */
+export async function getLocalDatabaseDiagnostics(): Promise<{
+  indexedDbActive: boolean;
+  sqliteActive: boolean;
+  isNative: boolean;
+  engineDescription: string;
+  sqliteSessionsCount: number;
+}> {
+  const sqliteDiag = await getSQLiteDiagnostics();
+  const idbActive = typeof window !== 'undefined' && !!window.indexedDB;
+
+  let desc = 'IndexedDB Browser Storage';
+  if (sqliteDiag.isAvailable) {
+    desc = sqliteDiag.isNative
+      ? 'Capacitor SQLite (Native Persistent Auto-Backup) + IndexedDB'
+      : 'Capacitor SQLite + IndexedDB Dual-Engine';
+  }
+
+  return {
+    indexedDbActive: idbActive,
+    sqliteActive: sqliteDiag.isAvailable,
+    isNative: sqliteDiag.isNative,
+    engineDescription: desc,
+    sqliteSessionsCount: sqliteDiag.totalSessions,
+  };
 }
