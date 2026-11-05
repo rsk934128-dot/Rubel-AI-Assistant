@@ -31,6 +31,7 @@ import { useMiniBrowser } from '../context/MiniBrowserContext';
 import { extractYouTubeVideoId } from '../utils/youtube';
 import { AudioFrequencyWave } from './AudioFrequencyWave';
 import { WordCharCounter } from './WordCharCounter';
+import { VoiceCommandDefinition, matchVoiceCommand } from '../types/voiceCommands';
 
 interface ChatInputProps {
   input: string;
@@ -44,6 +45,8 @@ interface ChatInputProps {
   setMode: (mode: AssistantMode) => void;
   onOpenGoogleDrive?: () => void;
   onOpenShareReceiver?: () => void;
+  onVoiceCommand?: (command: VoiceCommandDefinition, transcript: string) => void;
+  onOpenVoiceCommands?: () => void;
   onFocus?: () => void;
   onBlur?: () => void;
 }
@@ -60,6 +63,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   setMode,
   onOpenGoogleDrive,
   onOpenShareReceiver,
+  onVoiceCommand,
+  onOpenVoiceCommands,
   onFocus,
   onBlur,
 }) => {
@@ -89,6 +94,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   } = useMediaRecorderVoice({
     language: voiceLang,
     onTranscriptSuccess: (transcript) => {
+      // Check if user spoke a hands-free voice command (e.g. "Open Trading Bot", "Clear Chat")
+      const matchedCmd = matchVoiceCommand(transcript);
+      if (matchedCmd && onVoiceCommand) {
+        onVoiceCommand(matchedCmd, transcript);
+        setSuccessToast(`⚡ ভয়েস কমান্ড সম্পন্ন: ${matchedCmd.nameBn}`);
+        setTimeout(() => setSuccessToast(null), 3500);
+        return;
+      }
+
       setInput((prev) => {
         const trimmed = prev.trim();
         return trimmed ? `${trimmed} ${transcript}` : transcript;
@@ -551,6 +565,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <Languages className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                 <span className="text-[11px]">{voiceLang === 'bn-BD' ? 'বাং' : 'EN'}</span>
               </button>
+
+              {/* Voice-to-Command Quick Cheatsheet Trigger */}
+              {onOpenVoiceCommands && (
+                <button
+                  id="chat-input-voice-commands-help"
+                  type="button"
+                  onClick={onOpenVoiceCommands}
+                  title="ভয়েস কমান্ড সহায়িকা ও চিটশিট (Voice Commands Help)"
+                  className="flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-xl text-xs font-semibold bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-800 hover:bg-purple-100 dark:hover:bg-purple-900/60 transition-all cursor-pointer shrink-0"
+                >
+                  <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+                  <span className="hidden sm:inline text-[11px]">কমান্ড</span>
+                </button>
+              )}
 
               {input && (
                 <button

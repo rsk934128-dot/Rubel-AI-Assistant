@@ -39,6 +39,8 @@ import {
   Eye,
   TrendingUp,
   Smartphone,
+  Mic,
+  MicOff,
 } from 'lucide-react';
 import { AssistantMode } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -68,6 +70,9 @@ interface HeaderProps {
   onOpenRubelNetManager?: () => void;
   onOpenTradingBot?: () => void;
   onOpenAndroidApk?: () => void;
+  onOpenVoiceCommands?: () => void;
+  isVoiceListening?: boolean;
+  onToggleVoiceListening?: () => void;
   onNewChat: () => void;
   onClearChat: () => void;
   onExportChat: () => void;
@@ -105,6 +110,9 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenRubelNetManager,
   onOpenTradingBot,
   onOpenAndroidApk,
+  onOpenVoiceCommands,
+  isVoiceListening,
+  onToggleVoiceListening,
   onNewChat,
   onClearChat,
   onExportChat,
@@ -344,6 +352,29 @@ export const Header: React.FC<HeaderProps> = ({
             <TrendingUp className="w-3.5 h-3.5 stroke-[3] text-emerald-200 animate-pulse" />
             <span className="hidden sm:inline">ট্রেডিং বট 📊</span>
             <span className="sm:hidden">ট্রেড বট</span>
+          </button>
+        )}
+
+        {/* Voice-to-Command Accessibility Button */}
+        {onOpenVoiceCommands && (
+          <button
+            id="header-open-voice-commands-btn"
+            type="button"
+            onClick={onOpenVoiceCommands}
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+              isVoiceListening
+                ? 'bg-gradient-to-r from-rose-600 to-pink-600 text-white shadow-md shadow-rose-950/50 animate-pulse ring-2 ring-rose-300'
+                : 'bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:brightness-110 active:scale-95 text-white shadow-md shadow-indigo-950/40'
+            }`}
+            title="ভয়েস-টু-কমান্ড অ্যাক্সেসিবিলিটি (মুখে বলে সরাসরি অ্যাপ পরিচালনা করুন)"
+          >
+            {isVoiceListening ? (
+              <Mic className="w-3.5 h-3.5 stroke-[2.5] text-white animate-bounce" />
+            ) : (
+              <Mic className="w-3.5 h-3.5 stroke-[2.5] text-indigo-100" />
+            )}
+            <span className="hidden sm:inline">ভয়েস কমান্ড 🎙️</span>
+            <span className="sm:hidden">ভয়েস</span>
           </button>
         )}
 

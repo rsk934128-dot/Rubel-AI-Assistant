@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 import rateLimit from 'express-rate-limit';
-import { safeFetch, validateSafeUrl, escapeHtml } from './safeFetch.js';
+import { safeFetch, validateSafeUrl, escapeHtml } from './safeFetch.ts';
 
 const getAppDirname = () => {
   try {
@@ -22,12 +22,13 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 export const FALLBACK_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
   'gemini-3.8-flash',
   'gemini-3.5-flash',
   'gemini-3.6-flash',
   'gemini-flash-lite-latest',
-  'gemini-3.1-flash-lite',
-  'gemini-flash-latest',
 ];
 
 export const ALLOWED_MODELS = new Set([
@@ -112,10 +113,7 @@ export const apiLimiter = rateLimit({
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: {
-    xForwardedForHeader: false,
-    forwardedHeader: false,
-  },
+  validate: false,
   keyGenerator: getClientIp,
   message: { error: 'অতিরিক্ত রিকোয়েস্ট পাঠানো হয়েছে। অনুগ্রহ করে ১৫ মিনিট পর আবার চেষ্টা করুন।' },
 });
@@ -126,10 +124,7 @@ export const aiLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: {
-    xForwardedForHeader: false,
-    forwardedHeader: false,
-  },
+  validate: false,
   keyGenerator: getClientIp,
   message: { error: 'এআই কোটা সীমা সুরক্ষিত রাখতে সাময়িক বিরতি দিন। ১ মিনিট পর পুনরায় চেষ্টা করুন।' },
 });
@@ -140,10 +135,7 @@ export const proxyLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  validate: {
-    xForwardedForHeader: false,
-    forwardedHeader: false,
-  },
+  validate: false,
   keyGenerator: getClientIp,
   message: { error: 'প্রক্সি রিকোয়েস্টের সীমা অতিক্রম হয়েছে। অনুগ্রহ করে কিছুক্ষণ অপেক্ষা করুন।' },
 });
@@ -205,36 +197,63 @@ app.all(['/api', '/api/'], (req, res) => {
 });
 
 
-// Track whether the default environment API key is revoked/leaked (initially false)
-let isDefaultKeyRevoked = false;
+// Track known leaked or revoked API keys so we seamlessly fall back to working keys
+export const knownInvalidApiKeys = new Set<string>();
 
-// Helper to extract available Gemini API key from multiple common hosting variable names or request headers
-function getEffectiveGeminiApiKey(req?: express.Request): string {
+export function markApiKeyInvalid(key: string) {
+  if (key && typeof key === 'string') {
+    knownInvalidApiKeys.add(key.trim());
+  }
+}
+
+// Helper to extract all candidate Gemini API keys in order of preference
+export function getCandidateGeminiApiKeys(req?: express.Request): string[] {
+  const candidates: string[] = [];
+
   // 1. Check custom header sent by client (e.g. from user settings)
   const headerKey = req?.headers?.['x-gemini-api-key'];
   if (typeof headerKey === 'string' && headerKey.trim().length > 10) {
-    return headerKey.trim();
+    candidates.push(headerKey.trim());
   }
 
   // 2. Check custom body param
   const bodyKey = (req?.body as any)?.apiKey;
   if (typeof bodyKey === 'string' && bodyKey.trim().length > 10) {
-    return bodyKey.trim();
+    candidates.push(bodyKey.trim());
   }
 
-  // 3. Fallback to server environment variables
-  return (
-    process.env.GEMINI_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    process.env.API_KEY ||
-    ''
-  ).trim();
+  // 3. Fallback to server environment variables (check GEMINI_API, GEMINI_API_KEY, etc.)
+  const envCandidates = [
+    process.env.GEMINI_API,
+    process.env.GEMINI_API_KEY,
+    process.env.VITE_GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.API_KEY,
+  ];
+
+  for (const envK of envCandidates) {
+    if (typeof envK === 'string' && envK.trim().length > 10) {
+      const trimmed = envK.trim();
+      if (!candidates.includes(trimmed)) {
+        candidates.push(trimmed);
+      }
+    }
+  }
+
+  // Prioritize keys that are not known to be invalid/leaked
+  const nonRevoked = candidates.filter((k) => !knownInvalidApiKeys.has(k));
+  return nonRevoked.length > 0 ? nonRevoked : candidates;
 }
 
-// Lazy GoogleGenAI client with optional request-scoped API key
-function getAIClient(req?: express.Request) {
-  const apiKey = getEffectiveGeminiApiKey(req);
+// Helper to extract available Gemini API key from multiple common hosting variable names or request headers
+export function getEffectiveGeminiApiKey(req?: express.Request): string {
+  const candidates = getCandidateGeminiApiKeys(req);
+  return candidates[0] || '';
+}
+
+// Lazy GoogleGenAI client with optional request-scoped or specific API key
+export function getAIClient(req?: express.Request, specificApiKey?: string) {
+  const apiKey = specificApiKey || getEffectiveGeminiApiKey(req);
   if (!apiKey) {
     throw new Error(
       'GEMINI_API_KEY is not configured in environment variables. Please set GEMINI_API_KEY in your hosting dashboard or add a new API Key in app settings.'
@@ -392,61 +411,78 @@ function formatFriendlyErrorMessage(err: any): string {
 }
 
 async function fetchStreamWithResilience(
-  ai: any,
+  reqOrAi: express.Request | any,
   contents: any[],
   systemInstruction: string,
   enableSearch: boolean,
-  modelPreference = 'gemini-3.8-flash'
+  modelPreference = 'gemini-2.5-flash'
 ) {
+  const req = reqOrAi && typeof reqOrAi.get === 'function' ? (reqOrAi as express.Request) : undefined;
+  const candidateKeys = req ? getCandidateGeminiApiKeys(req) : [getEffectiveGeminiApiKey()];
+
   const modelsToTry = [
     modelPreference,
     ...FALLBACK_MODELS,
   ].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i);
 
-  let searchAvailable = enableSearch;
   let lastError: any = null;
 
-  for (const model of modelsToTry) {
-    // If search is requested and currently available, attempt it
-    if (searchAvailable) {
+  for (const apiKey of candidateKeys) {
+    let ai: any;
+    try {
+      ai = req ? getAIClient(req, apiKey) : (reqOrAi?.models ? reqOrAi : getAIClient(undefined, apiKey));
+    } catch (e) {
+      lastError = e;
+      continue;
+    }
+
+    let searchAvailable = enableSearch;
+
+    for (const model of modelsToTry) {
+      // If search is requested and currently available, attempt it
+      if (searchAvailable) {
+        try {
+          const stream = await ai.models.generateContentStream({
+            model,
+            contents,
+            config: { systemInstruction, tools: [{ googleSearch: {} }] },
+          });
+          return { stream, modelUsed: model, hadSearch: true };
+        } catch (err: any) {
+          lastError = err;
+          const errStr = String(err?.message || err).toLowerCase();
+          if (errStr.includes('leaked') || errStr.includes('reported as leaked')) {
+            markApiKeyInvalid(apiKey);
+            break; // Try next candidate key
+          }
+          searchAvailable = false;
+        }
+      }
+
+      // Try standard prompt generation without search tools
       try {
         const stream = await ai.models.generateContentStream({
           model,
           contents,
-          config: { systemInstruction, tools: [{ googleSearch: {} }] },
+          config: { systemInstruction },
         });
-        return { stream, modelUsed: model, hadSearch: true };
+        return { stream, modelUsed: model, hadSearch: false };
       } catch (err: any) {
         lastError = err;
         const errStr = String(err?.message || err).toLowerCase();
         if (errStr.includes('leaked') || errStr.includes('reported as leaked')) {
-          throw err;
+          markApiKeyInvalid(apiKey);
+          break; // Try next candidate key
         }
-        searchAvailable = false;
-      }
-    }
-
-    // Try standard prompt generation without search tools
-    try {
-      const stream = await ai.models.generateContentStream({
-        model,
-        contents,
-        config: { systemInstruction },
-      });
-      return { stream, modelUsed: model, hadSearch: false };
-    } catch (err: any) {
-      lastError = err;
-      const errStr = String(err?.message || err).toLowerCase();
-      if (errStr.includes('leaked') || errStr.includes('reported as leaked')) {
-        throw err;
-      }
-      if (
-        errStr.includes('429') ||
-        errStr.includes('quota') ||
-        errStr.includes('resource_exhausted') ||
-        errStr.includes('503')
-      ) {
-        await sleep(300);
+        if (
+          errStr.includes('429') ||
+          errStr.includes('quota') ||
+          errStr.includes('resource_exhausted') ||
+          errStr.includes('503') ||
+          errStr.includes('unavailable')
+        ) {
+          await sleep(250);
+        }
       }
     }
   }
@@ -455,52 +491,76 @@ async function fetchStreamWithResilience(
 }
 
 async function fetchContentWithResilience(
-  ai: any,
+  reqOrAi: express.Request | any,
   contents: any[],
   systemInstruction: string,
   enableSearch: boolean,
-  modelPreference = 'gemini-3.8-flash'
+  modelPreference = 'gemini-2.5-flash'
 ) {
+  const req = reqOrAi && typeof reqOrAi.get === 'function' ? (reqOrAi as express.Request) : undefined;
+  const candidateKeys = req ? getCandidateGeminiApiKeys(req) : [getEffectiveGeminiApiKey()];
+
   const modelsToTry = [
     modelPreference,
     ...FALLBACK_MODELS,
   ].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i);
 
-  let searchAvailable = enableSearch;
   let lastError: any = null;
 
-  for (const model of modelsToTry) {
-    if (searchAvailable) {
+  for (const apiKey of candidateKeys) {
+    let ai: any;
+    try {
+      ai = req ? getAIClient(req, apiKey) : (reqOrAi?.models ? reqOrAi : getAIClient(undefined, apiKey));
+    } catch (e) {
+      lastError = e;
+      continue;
+    }
+
+    let searchAvailable = enableSearch;
+
+    for (const model of modelsToTry) {
+      if (searchAvailable) {
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            contents,
+            config: { systemInstruction, tools: [{ googleSearch: {} }] },
+          });
+          return response;
+        } catch (err: any) {
+          lastError = err;
+          const errStr = String(err?.message || err).toLowerCase();
+          if (errStr.includes('leaked') || errStr.includes('reported as leaked')) {
+            markApiKeyInvalid(apiKey);
+            break;
+          }
+          searchAvailable = false;
+        }
+      }
+
       try {
         const response = await ai.models.generateContent({
           model,
           contents,
-          config: { systemInstruction, tools: [{ googleSearch: {} }] },
+          config: { systemInstruction },
         });
         return response;
       } catch (err: any) {
         lastError = err;
-        searchAvailable = false;
-      }
-    }
-
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config: { systemInstruction },
-      });
-      return response;
-    } catch (err: any) {
-      lastError = err;
-      const errStr = String(err?.message || err);
-      if (
-        errStr.includes('429') ||
-        errStr.includes('quota') ||
-        errStr.includes('RESOURCE_EXHAUSTED') ||
-        errStr.includes('503')
-      ) {
-        await sleep(300);
+        const errStr = String(err?.message || err).toLowerCase();
+        if (errStr.includes('leaked') || errStr.includes('reported as leaked')) {
+          markApiKeyInvalid(apiKey);
+          break;
+        }
+        if (
+          errStr.includes('429') ||
+          errStr.includes('quota') ||
+          errStr.includes('resource_exhausted') ||
+          errStr.includes('503') ||
+          errStr.includes('unavailable')
+        ) {
+          await sleep(250);
+        }
       }
     }
   }
@@ -512,13 +572,12 @@ async function fetchContentWithResilience(
 app.all('/api/health/test', async (req, res) => {
   const startTime = Date.now();
   try {
-    const ai = getAIClient(req);
     const response = await fetchContentWithResilience(
-      ai,
+      req,
       [{ role: 'user', parts: [{ text: 'Respond with the single word: OK' }] }],
       'You are a health check agent. Return only OK.',
       false,
-      'gemini-3.8-flash'
+      'gemini-2.5-flash'
     );
     const latency = Date.now() - startTime;
     return res.json({
@@ -805,7 +864,7 @@ app.post('/api/chat/stream', aiLimiter, async (req, res) => {
 
     // Stream content with automatic retry and model/search fallbacks
     const { stream: responseStream } = await fetchStreamWithResilience(
-      ai,
+      req,
       formattedContents,
       effectiveSystemInstruction,
       enableSearch,
@@ -856,38 +915,16 @@ app.post('/api/chat/stream', aiLimiter, async (req, res) => {
 
     res.end();
   } catch (error: any) {
-    const isLeaked = String(error?.message || '').toLowerCase().includes('leaked');
-    if (isLeaked) {
-      if (!res.headersSent) {
-        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-        res.setHeader('Cache-Control', 'no-cache, no-transform');
-        res.setHeader('Connection', 'keep-alive');
-        res.flushHeaders?.();
-      }
-
-      const promptText = req.body?.prompt || (req.body?.messages?.[req.body?.messages?.length - 1]?.text) || '';
-      const fallbackReply = generateSmartFallbackReply(promptText, req.body?.mode);
-
-      const words = fallbackReply.split(' ');
-      for (let i = 0; i < words.length; i += 3) {
-        const chunk = words.slice(i, i + 3).join(' ') + ' ';
-        res.write(`data: ${JSON.stringify({ text: chunk, isLeaked: true })}\n\n`);
-        await sleep(20);
-      }
-      res.write(`data: ${JSON.stringify({ done: true, isLeaked: true })}\n\n`);
-      res.end();
-      return;
-    }
-
     console.warn('Notice in /api/chat/stream:', error?.message ? String(error.message).slice(0, 200) : String(error));
     const friendlyErrorMessage = formatFriendlyErrorMessage(error);
+    const isLeaked = String(error?.message || '').toLowerCase().includes('leaked');
     
     // If headers already sent, write error event
     if (res.headersSent) {
-      res.write(`data: ${JSON.stringify({ error: friendlyErrorMessage })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: friendlyErrorMessage, isLeaked })}\n\n`);
       res.end();
     } else {
-      res.status(500).json({ error: friendlyErrorMessage });
+      res.status(500).json({ error: friendlyErrorMessage, isLeaked });
     }
   }
 });
@@ -931,7 +968,7 @@ app.post('/api/chat', aiLimiter, async (req, res) => {
     const effectiveSystemInstruction = systemInstruction ? `${SHARED_DEFAULT_SYSTEM_PROMPT}${modeNote}\n\n${systemInstruction}` : `${SHARED_DEFAULT_SYSTEM_PROMPT}${modeNote}`;
 
     const response = await fetchContentWithResilience(
-      ai,
+      req,
       formattedContents,
       effectiveSystemInstruction,
       enableSearch,
@@ -948,17 +985,10 @@ app.post('/api/chat', aiLimiter, async (req, res) => {
       searchQueries,
     });
   } catch (error: any) {
-    const isLeaked = String(error?.message || '').toLowerCase().includes('leaked');
-    if (isLeaked) {
-      const promptText = req.body?.prompt || (req.body?.messages?.[req.body?.messages?.length - 1]?.text) || '';
-      const fallbackReply = generateSmartFallbackReply(promptText, req.body?.mode);
-      return res.json({
-        text: fallbackReply,
-        isLeaked: true,
-      });
-    }
     console.error('Error in /api/chat:', error);
-    res.status(500).json({ error: error?.message || 'Server error occurred.' });
+    const friendlyErrorMessage = formatFriendlyErrorMessage(error);
+    const isLeaked = String(error?.message || '').toLowerCase().includes('leaked');
+    res.status(500).json({ error: friendlyErrorMessage, isLeaked });
   }
 });
 
@@ -994,35 +1024,12 @@ app.post('/api/session/title', async (req, res) => {
       (typeof customBody === 'string' && customBody.trim().length > 10)
     );
 
-    // If default key was marked leaked and no custom key is provided, generate smart local title directly
-    if (isDefaultKeyRevoked && !hasCustomKey) {
-      const fallbackTitle = generateSmartTitle(cleanUser, cleanAssistant);
-      return res.json({ title: fallbackTitle });
-    }
-
-    const ai = getAIClient(req);
-
-    const prompt = `You are a concise conversation titling engine.
-Generate a short, descriptive, and accurate title (3 to 6 words maximum) for this chat session based on the first user-assistant interaction.
-
-Rules:
-1. Length: Exactly 3 to 6 words.
-2. Language: If the user's message is written primarily in Bengali (বাংলা), generate the title in natural, fluent Bengali. If written in English, generate in English.
-3. Content: Capture the specific topic, problem, or objective (e.g. "পাইথনে ডেটা সর্টিং", "রিয়েক্ট হুকস আর্কিটেকচার", "Tailwind CSS Layout Debugging", "জব অ্যাপ্লিকেশনের কভার লেটার").
-4. Format: Return ONLY the title text. Do NOT wrap in quotes. Do NOT add prefixes like "Title:" or "শিরোনাম:". Do NOT add markdown or trailing punctuation like periods or dāri (।).
-
-User message:
-"${cleanUser}"
-
-Assistant response:
-"${cleanAssistant}"`;
-
     const response = await fetchContentWithResilience(
-      ai,
+      req,
       [{ role: 'user', parts: [{ text: prompt }] }],
       'You generate clear, concise 3-6 word conversation titles.',
       false, // search disabled for fast, cheap title generation
-      'gemini-3.8-flash'
+      'gemini-2.5-flash'
     );
 
     let generatedTitle = response.text || '';
@@ -1042,7 +1049,7 @@ Assistant response:
   } catch (error: any) {
     const isLeaked = String(error?.message || '').toLowerCase().includes('leaked');
     if (isLeaked) {
-      isDefaultKeyRevoked = true;
+      markApiKeyInvalid(getEffectiveGeminiApiKey(req));
     } else {
       console.warn('Notice in /api/session/title:', error?.message ? String(error.message).slice(0, 100) : error);
     }

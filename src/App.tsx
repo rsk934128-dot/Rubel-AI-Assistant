@@ -87,6 +87,10 @@ import {
 } from './lib/indexedDb';
 import workspaceHeroImg from './assets/images/ai_workspace_hero_1790066671032.jpg';
 import apiArchitectureImg from './assets/images/api_architecture_graphic_1790066692425.jpg';
+import { VoiceCommandHUD } from './components/VoiceCommandHUD';
+import { VoiceCommandModal } from './components/VoiceCommandModal';
+import { useVoiceToCommand } from './hooks/useVoiceToCommand';
+import { VoiceCommandDefinition, VoiceCommandId } from './types/voiceCommands';
 
 const STORAGE_KEY = 'ai_studio_chat_sessions_v1';
 const THEME_KEY = 'ai_studio_theme_mode';
@@ -169,6 +173,11 @@ export default function App() {
   const [rubelNetManagerOpen, setRubelNetManagerOpen] = useState(false);
   const [incomingSharedItem, setIncomingSharedItem] = useState<InboundSharedContent | null>(null);
   const [sharedAlertToast, setSharedAlertToast] = useState<string | null>(null);
+
+  // Voice-to-Command Accessibility State
+  const [voiceCommandModalOpen, setVoiceCommandModalOpen] = useState(false);
+  const [executedVoiceCommand, setExecutedVoiceCommand] = useState<VoiceCommandDefinition | null>(null);
+  const [executedVoiceTranscript, setExecutedVoiceTranscript] = useState<string>('');
 
   // Real-Time Trading Screen Bot State (Quotex, Pocket Option, Binance AI Vision Bot)
   const [tradingBotModalOpen, setTradingBotModalOpen] = useState(false);
@@ -778,6 +787,125 @@ export default function App() {
     setExportModalOpen(true);
   };
 
+  // Central Voice-to-Command Execution Engine
+  const handleVoiceCommandExecuted = (command: VoiceCommandDefinition, transcript: string = '') => {
+    setExecutedVoiceCommand(command);
+    setExecutedVoiceTranscript(transcript);
+
+    switch (command.id) {
+      case 'OPEN_TRADING_BOT':
+        setTradingBotModalOpen(true);
+        break;
+      case 'CLOSE_TRADING_BOT':
+        setTradingBotModalOpen(false);
+        setFloatingHUDOpen(false);
+        break;
+      case 'CLEAR_CHAT':
+        updateActiveSession((s) => ({
+          ...s,
+          messages: [],
+          title: 'নতুন কথোপকথন',
+        }));
+        break;
+      case 'NEW_CHAT':
+        handleNewChat();
+        break;
+      case 'EXPORT_CHAT':
+        handleExportChat();
+        break;
+      case 'SET_MODE_CODING':
+        setMode('coding');
+        break;
+      case 'SET_MODE_WRITING':
+        setMode('writing');
+        break;
+      case 'SET_MODE_RESEARCH':
+        setMode('research');
+        break;
+      case 'SET_MODE_LEARNING':
+        setMode('learning');
+        break;
+      case 'SET_MODE_CITIZEN':
+        setMode('citizen');
+        break;
+      case 'SET_MODE_GENERAL':
+        setMode('general');
+        break;
+      case 'SET_DARK_MODE':
+        setDarkMode(true);
+        break;
+      case 'SET_LIGHT_MODE':
+        setDarkMode(false);
+        break;
+      case 'TOGGLE_DARK_MODE':
+        setDarkMode((prev) => !prev);
+        break;
+      case 'OPEN_GOOGLE_DRIVE':
+        setIsGoogleDriveOpen(true);
+        break;
+      case 'OPEN_YOUTUBE':
+        setYouTubeModalOpen(true);
+        break;
+      case 'OPEN_VISION_STUDIO':
+        setVisionStudioOpen(true);
+        break;
+      case 'OPEN_ARCHITECTURE':
+        setArchitectureModalOpen(true);
+        break;
+      case 'OPEN_METRICS':
+        setMetricsModalOpen(true);
+        break;
+      case 'OPEN_FREELANCE_AGENT':
+        setFreelanceAgentModalOpen(true);
+        break;
+      case 'OPEN_CITIZEN_SERVICES':
+        setCitizenModalOpen(true);
+        break;
+      case 'OPEN_MOBILE_PROGRAMS':
+        setMobileProgramsHubOpen(true);
+        break;
+      case 'OPEN_ANDROID_APK':
+        setAndroidApkModalOpen(true);
+        break;
+      case 'OPEN_TTS_SETTINGS':
+        setTtsSettingsModalOpen(true);
+        break;
+      case 'TOGGLE_SIDEBAR':
+        setSidebarOpen((prev) => !prev);
+        break;
+      case 'ENABLE_SEARCH':
+        setEnableSearch(true);
+        break;
+      case 'DISABLE_SEARCH':
+        setEnableSearch(false);
+        break;
+      case 'SCROLL_TOP':
+        handleScrollToTop();
+        break;
+      case 'SCROLL_BOTTOM':
+        handleScrollToBottom();
+        break;
+      case 'OPEN_COMMANDS_HELP':
+        setVoiceCommandModalOpen(true);
+        break;
+      default:
+        console.warn('Unhandled voice command:', command.id);
+    }
+  };
+
+  const {
+    isListening: isVoiceCommandListening,
+    toggleListening: toggleVoiceCommandListening,
+    voiceLang: voiceCommandLang,
+    setVoiceLang: setVoiceCommandLang,
+    interimTranscript: voiceCommandInterimTranscript,
+    executeCommandById: executeVoiceCommandById,
+  } = useVoiceToCommand({
+    onCommandExecuted: handleVoiceCommandExecuted,
+    enableAudioChime: true,
+    enableSpokenFeedback: false,
+  });
+
   const handleStopGenerating = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -1183,36 +1311,6 @@ export default function App() {
         : textToSend
       : activeSession.title;
 
-    // OFFLINE HANDLING: If currently offline, save immediately to IndexedDB and queue for Firestore sync
-    if (!isOnline) {
-      const offlineMsgId = 'msg-' + (Date.now() + 1);
-      const offlineAssistantMessage: ChatMessage = {
-        id: offlineMsgId,
-        role: 'assistant',
-        text: `🌐 **অফলাইন মোড — বার্তাটি লোকাল IndexedDB তে সংরক্ষিত হয়েছে**\n\nবর্তমানে আপনার ডিভাইস ইন্টারনেট সংযোগ বিচ্ছিন্ন (Offline) অবস্থায় রয়েছে।\n\n✅ আপনার বার্তাটি সফলভাবে লোকাল **IndexedDB** ডাটাবেজে সংরক্ষিত হয়েছে। চ্যাট হিস্ট্রি নির্বিঘ্নে ব্রাউজ করতে পারবেন।\n\n🔄 ইন্টারনেট সংযোগ ফিরে আসা মাত্রই এটি স্বয়ংক্রিয়ভাবে Google ক্লাউড ফায়ারস্টোরে সিঙ্ক (Sync) হয়ে যাবে এবং Gemini এআই রেসপন্স তৈরি হবে।`,
-        timestamp: Date.now(),
-        isStreaming: false,
-        mode,
-      };
-
-      const updatedMessagesWithOffline = [...activeSession.messages, userMessage, offlineAssistantMessage];
-      const updatedSession: ChatSession = {
-        ...activeSession,
-        title: newTitle,
-        messages: updatedMessagesWithOffline,
-        updatedAt: Date.now(),
-      };
-
-      updateActiveSession(() => updatedSession);
-
-      // Persist directly to IndexedDB & enqueue to pending sync
-      await saveSessionToIndexedDB(updatedSession);
-      await enqueuePendingSync(updatedSession);
-      const pending = await getPendingSyncQueue();
-      setPendingSyncCount(pending.length);
-      return;
-    }
-
     const assistantMsgId = 'msg-' + (Date.now() + 1);
     const initialAssistantMessage: ChatMessage = {
       id: assistantMsgId,
@@ -1353,6 +1451,9 @@ export default function App() {
           onOpenRubelNetManager={() => setRubelNetManagerOpen(true)}
           onOpenTradingBot={() => setTradingBotModalOpen(true)}
           onOpenAndroidApk={() => setAndroidApkModalOpen(true)}
+          onOpenVoiceCommands={() => setVoiceCommandModalOpen(true)}
+          isVoiceListening={isVoiceCommandListening}
+          onToggleVoiceListening={toggleVoiceCommandListening}
           onNewChat={handleNewChat}
           onClearChat={handleClearChat}
           onExportChat={handleExportChat}
@@ -1898,6 +1999,8 @@ export default function App() {
             setMode={setMode}
             onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
             onOpenShareReceiver={() => setShareReceiverOpen(true)}
+            onVoiceCommand={handleVoiceCommandExecuted}
+            onOpenVoiceCommands={() => setVoiceCommandModalOpen(true)}
             onFocus={() => setIsChatInputFocused(true)}
             onBlur={() => setIsChatInputFocused(false)}
           />
@@ -2239,6 +2342,28 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* Voice-to-Command Floating HUD Toast */}
+      <VoiceCommandHUD
+        command={executedVoiceCommand}
+        transcript={executedVoiceTranscript}
+        onDismiss={() => {
+          setExecutedVoiceCommand(null);
+          setExecutedVoiceTranscript('');
+        }}
+      />
+
+      {/* Voice Commands Cheatsheet & Interactive Testing Modal */}
+      <VoiceCommandModal
+        isOpen={voiceCommandModalOpen}
+        onClose={() => setVoiceCommandModalOpen(false)}
+        onTriggerCommand={(cmdId) => executeVoiceCommandById(cmdId)}
+        isListening={isVoiceCommandListening}
+        onToggleListening={toggleVoiceCommandListening}
+        voiceLang={voiceCommandLang}
+        onSetVoiceLang={setVoiceCommandLang}
+        interimTranscript={voiceCommandInterimTranscript}
+      />
 
       {/* PWA Offline & IndexedDB Sync Indicator */}
       <OfflineIndicator
